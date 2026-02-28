@@ -79,23 +79,96 @@ body {
   color: var(--text);
 }
 
+.btn-mode-active {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--primary-contrast);
+}
+
+.btn-mode-inactive {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
 .mic-section {
   margin-top: 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
 }
 
 .mic-btn {
-  width: 100%;
-  border: 1px solid var(--border);
-  border-radius: 999px;
+  width: 132px;
+  height: 132px;
+  margin: 2px auto 0;
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--border);
+  border-radius: 50%;
   background: var(--surface);
-  padding: 10px;
+  padding: 12px;
+  text-align: center;
   font-size: 14px;
   cursor: pointer;
+  font-weight: 600;
+  transition: transform 0.12s ease, border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
 }
 
 .mic-btn.active {
   border-color: var(--danger);
   color: var(--danger);
+  background: #fff4f4;
+  box-shadow: 0 0 0 3px rgba(185, 28, 28, 0.14);
+  transform: scale(1.03);
+}
+
+.mic-section.active {
+  border-color: var(--danger);
+  background: #fff8f8;
+  box-shadow: 0 0 0 3px rgba(185, 28, 28, 0.1);
+}
+
+.mic-section.active .mic-btn {
+  animation: mic-pulse 1s infinite;
+}
+
+.live-transcript {
+  margin-top: 8px;
+  min-height: 56px;
+  max-height: 120px;
+  overflow: auto;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--muted);
+  background: #fafafa;
+}
+
+.live-transcript.active {
+  border-color: var(--danger);
+  color: #7f1d1d;
+  background: #fff4f4;
+}
+
+.live-transcript.interim {
+  font-style: italic;
+}
+
+@keyframes mic-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(185, 28, 28, 0.3);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(185, 28, 28, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(185, 28, 28, 0);
+  }
 }
 
 .skills {

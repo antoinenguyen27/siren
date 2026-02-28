@@ -9,10 +9,19 @@ let pttStream = null;
 let pttChunks = [];
 let isPttActive = false;
 let pttRecorderMimeType = '';
+let speechRecognition = null;
+let recognitionSessionId = 0;
+let latestPreviewTranscript = '';
 
 const statusEl = document.getElementById('status');
 const skillLogEl = document.getElementById('skill-log');
 const micBtn = document.getElementById('mic-btn');
+const micSectionEl = document.querySelector('.mic-section');
+const liveTranscriptEl = document.getElementById('live-transcript');
+const startDemoBtn = document.getElementById('start-demo');
+const stopDemoBtn = document.getElementById('stop-demo');
+const startWorkBtn = document.getElementById('start-work');
+const stopWorkBtn = document.getElementById('stop-work');
 
 function getPreferredAudioMimeType() {
   const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
@@ -29,6 +38,99 @@ function extensionForMimeType(mimeType) {
 
 function setStatus(message) {
   statusEl.textContent = message;
+}
+
+function setLiveTranscript(text, isInterim = false) {
+  liveTranscriptEl.textContent = text || '';
+  liveTranscriptEl.classList.toggle('interim', isInterim);
+}
+
+function setMicActiveUi(active) {
+  micBtn.classList.toggle('active', active);
+  micSectionEl.classList.toggle('active', active);
+  liveTranscriptEl.classList.toggle('active', active);
+  micBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  micBtn.textContent = active ? 'Stop\nRecording' : 'Tap To\nTalk';
+}
+
+function setModeButtons(activeMode) {
+  const setPair = (startBtn, stopBtn, isActive) => {
+    startBtn.classList.toggle('btn-mode-inactive', isActive);
+    startBtn.classList.toggle('btn-mode-active', !isActive);
+    startBtn.classList.toggle('btn-muted', isActive);
+
+    stopBtn.classList.toggle('btn-mode-active', isActive);
+    stopBtn.classList.toggle('btn-mode-inactive', !isActive);
+    stopBtn.classList.toggle('btn-muted', !isActive);
+  };
+
+  setPair(startDemoBtn, stopDemoBtn, activeMode === 'demo');
+  setPair(startWorkBtn, stopWorkBtn, activeMode === 'work');
+}
+
+function getSpeechRecognitionConstructor() {
+  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+}
+
+function startLiveTranscriptionPreview() {
+  const SpeechRecognitionCtor = getSpeechRecognitionConstructor();
+  recognitionSessionId += 1;
+  const sessionId = recognitionSessionId;
+  latestPreviewTranscript = '';
+  setLiveTranscript('Listening...', true);
+
+  if (!SpeechRecognitionCtor) return;
+
+  speechRecognition = new SpeechRecognitionCtor();
+  speechRecognition.lang = 'en-US';
+  speechRecognition.continuous = true;
+  speechRecognition.interimResults = true;
+
+  speechRecognition.onresult = (event) => {
+    if (sessionId !== recognitionSessionId) return;
+
+    let interim = '';
+    for (let i = event.resultIndex; i < event.results.length; i += 1) {
+      const result = event.results[i];
+      const text = String(result?.[0]?.transcript || '').trim();
+      if (!text) continue;
+      if (result.isFinal) {
+        latestPreviewTranscript = `${latestPreviewTranscript} ${text}`.trim();
+      } else {
+        interim = `${interim} ${text}`.trim();
+      }
+    }
+
+    const combined = `${latestPreviewTranscript} ${interim}`.trim();
+    if (combined) {
+      setLiveTranscript(combined, Boolean(interim));
+    }
+  };
+
+  speechRecognition.onerror = () => {
+    if (sessionId !== recognitionSessionId) return;
+    if (!latestPreviewTranscript) {
+      setLiveTranscript('Listening...', true);
+    }
+  };
+
+  try {
+    speechRecognition.start();
+  } catch {
+    // Ignore speech preview startup errors; recording pipeline still runs.
+  }
+}
+
+function stopLiveTranscriptionPreview() {
+  recognitionSessionId += 1;
+  if (speechRecognition) {
+    try {
+      speechRecognition.stop();
+    } catch {
+      // Ignore stop errors.
+    }
+  }
+  speechRecognition = null;
 }
 
 function appendSkillLog(message) {
@@ -95,6 +197,7 @@ async function startDemo() {
     await postJson('/demo/start', { tabUrl });
 
     mode = 'demo';
+    setModeButtons('demo');
     setStatus('Demo mode active: narrate actions in 4s segments.');
     await startContinuousTranscription(tabUrl);
   } catch (error) {
@@ -104,6 +207,7 @@ async function startDemo() {
 
 async function stopDemo() {
   mode = 'idle';
+  setModeButtons('idle');
   if (demoRestartTimer) {
     clearTimeout(demoRestartTimer);
     demoRestartTimer = null;
@@ -119,17 +223,21 @@ async function stopDemo() {
 
   demoRecorder = null;
   demoStream = null;
+  setMicActiveUi(false);
+  setLiveTranscript('Demo stopped.');
 
   setStatus('Demo stopped.');
 }
 
 async function startWork() {
   mode = 'work';
-  setStatus('Work mode active: hold mic button to talk.');
+  setModeButtons('work');
+  setStatus('Work mode active: tap the mic to start and stop.');
 }
 
 async function stopWork() {
   mode = 'idle';
+  setModeButtons('idle');
   await stopPushToTalkCapture();
 
   try {
@@ -157,6 +265,7 @@ async function startContinuousTranscription(initialTabUrl) {
     try {
       const transcript = await transcribeBlob(event.data);
       if (!transcript.trim()) return;
+      setLiveTranscript(transcript);
 
       const tabUrl = (await getActiveTabUrl()) || initialTabUrl;
       const data = await postJson('/demo/voice-segment', { transcript, tabUrl });
@@ -239,10 +348,17 @@ function blobToBase64(blob) {
 }
 
 async function beginPushToTalkCapture() {
-  if (mode !== 'work' || isPttActive) return;
+  if (isPttActive) return;
+  if (mode !== 'work') {
+    mode = 'work';
+    setModeButtons('work');
+    setStatus('Work mode active: tap the mic to start and stop.');
+  }
 
   isPttActive = true;
   pttChunks = [];
+  setMicActiveUi(true);
+  setLiveTranscript('Listening...', true);
 
   try {
     pttStream = await getUserMediaWithPermissionFallback({ audio: true });
@@ -259,7 +375,7 @@ async function beginPushToTalkCapture() {
     };
 
     pttRecorder.start();
-    micBtn.classList.add('active');
+    startLiveTranscriptionPreview();
     setStatus('Listening...');
   } catch (error) {
     isPttActive = false;
@@ -267,6 +383,7 @@ async function beginPushToTalkCapture() {
     pttStream = null;
     pttRecorder = null;
     pttRecorderMimeType = '';
+    setMicActiveUi(false);
     setStatus(`Error: ${error.message}`);
   }
 }
@@ -275,7 +392,8 @@ async function stopPushToTalkCapture() {
   if (!isPttActive) return;
 
   isPttActive = false;
-  micBtn.classList.remove('active');
+  setMicActiveUi(false);
+  stopLiveTranscriptionPreview();
 
   if (!pttRecorder || pttRecorder.state === 'inactive') {
     if (pttStream) pttStream.getTracks().forEach((track) => track.stop());
@@ -307,6 +425,7 @@ async function stopPushToTalkCapture() {
 
   if (blob.size === 0) {
     setStatus('No audio captured. Try again.');
+    setLiveTranscript('No speech detected.');
     return;
   }
 
@@ -320,6 +439,10 @@ async function stopPushToTalkCapture() {
       audioMimeType: mimeType,
       tabUrl,
     });
+    const transcript = String(payload?.transcript || '').trim();
+    if (transcript) {
+      setLiveTranscript(transcript);
+    }
 
     const responseText = String(payload?.response || 'Done.').trim();
     setStatus('Speaking...');
@@ -384,14 +507,12 @@ document.getElementById('stop-demo').addEventListener('click', stopDemo);
 document.getElementById('start-work').addEventListener('click', startWork);
 document.getElementById('stop-work').addEventListener('click', stopWork);
 
-micBtn.addEventListener('mousedown', beginPushToTalkCapture);
-micBtn.addEventListener('mouseup', stopPushToTalkCapture);
-micBtn.addEventListener('mouseleave', stopPushToTalkCapture);
-micBtn.addEventListener('touchstart', (event) => {
-  event.preventDefault();
-  beginPushToTalkCapture();
+micBtn.addEventListener('click', () => {
+  if (isPttActive) {
+    stopPushToTalkCapture();
+  } else {
+    beginPushToTalkCapture();
+  }
 });
-micBtn.addEventListener('touchend', (event) => {
-  event.preventDefault();
-  stopPushToTalkCapture();
-});
+
+setModeButtons('idle');

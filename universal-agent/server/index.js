@@ -103,18 +103,22 @@ app.post('/work/execute', async (req, res) => {
   try {
     const transcript = await transcribeAudio(audioBase64, audioMimeType);
     if (!transcript.trim() || transcript.trim() === "I didn't catch that.") {
-      return res.json({ response: "I didn't catch that." });
+      return res.json({ response: "I didn't catch that.", transcript });
     }
 
     if (shouldRefuseForSafety(transcript)) {
       return res.json({
         response:
           'I can help with navigation and general actions, but I cannot fill passwords, payment details, or other personal information.',
+        transcript,
       });
     }
 
     if (!isValidUrl(tabUrl)) {
-      return res.status(400).json({ response: 'No valid active tab URL. Open a normal web page and try again.' });
+      return res.status(400).json({
+        response: 'No valid active tab URL. Open a normal web page and try again.',
+        transcript,
+      });
     }
 
     await navigateTo(tabUrl);
@@ -144,7 +148,7 @@ app.post('/work/execute', async (req, res) => {
       timestamp: Date.now(),
     });
 
-    return res.json({ response });
+    return res.json({ response, transcript });
   } catch (error) {
     console.error('[work/execute] failed:', error);
     return res
