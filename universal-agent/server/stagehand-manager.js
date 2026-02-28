@@ -4,7 +4,68 @@ import { Stagehand } from '@browserbasehq/stagehand';
 let stagehandInstance = null;
 let activeMode = null;
 let activeChromePath = null;
+let activeConnection = 'local';
+let activeCdpUrl = null;
+let activeCdpSource = null;
 const DEFAULT_STAGEHAND_MODE = 'aisdk';
+
+function normalizeUrlForMatch(value) {
+  try {
+    const parsed = new URL(String(value || ''));
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return String(value || '');
+  }
+}
+
+function stripQueryAndHash(value) {
+  try {
+    const parsed = new URL(String(value || ''));
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return String(value || '');
+  }
+}
+
+async function resolveCdpWebSocketUrl(cdpUrl) {
+  const raw = String(cdpUrl || '').trim();
+  if (!raw) {
+    throw new Error('demoCdpUrl is required for demo-mode CDP attach.');
+  }
+
+  if (raw.startsWith('ws://') || raw.startsWith('wss://')) {
+    return raw;
+  }
+
+  if (raw.startsWith('http://') || raw.startsWith('https://')) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    try {
+      let response;
+      try {
+        response = await fetch(raw, { signal: controller.signal });
+      } catch (error) {
+        const message = error?.name === 'AbortError' ? 'timed out' : error?.message || String(error);
+        throw new Error(
+          `Failed to reach demo CDP endpoint "${raw}" (${message}). Make sure Chrome is launched with remote debugging and the endpoint is reachable.`,
+        );
+      }
+      const payload = await response.json().catch(() => ({}));
+      const ws = String(payload?.webSocketDebuggerUrl || '').trim();
+      if (!response.ok || !ws) {
+        throw new Error(
+          `Could not resolve webSocketDebuggerUrl from "${raw}". Verify the URL points to /json/version on the debug-enabled Chrome instance.`,
+        );
+      }
+      return ws;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  throw new Error('demoCdpUrl must be ws://... or http(s)://.../json/version');
+}
 
 export function getChromePath() {
   if (process.env.CHROME_EXECUTABLE_PATH) return process.env.CHROME_EXECUTABLE_PATH;
@@ -37,7 +98,62 @@ export function getChromePath() {
   }
 }
 
-function buildCommonConfig(chromePath) {
+function shouldFallbackToAISdk(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    message.includes('provider') ||
+    message.includes('modelname') ||
+    message.includes('modelclientoptions') ||
+    message.includes('unknown') ||
+    message.includes('invalid option')
+  );
+}
+
+function buildModeConfig(mode) {
+  if (mode === 'aisdk') {
+    return {
+      model: {
+        modelName: 'mistral/mistral-large-latest',
+        apiKey: process.env.MISTRAL_API_KEY,
+      },
+    };
+  }
+  return {
+    model: {
+      modelName: 'mistral/mistral-large-latest',
+      apiKey: process.env.MISTRAL_API_KEY,
+    },
+  };
+}
+
+async function buildCommonConfig(target) {
+  if (target.connection === 'cdp') {
+    const ws = await resolveCdpWebSocketUrl(target.cdpUrl);
+    activeChromePath = null;
+    activeCdpUrl = ws;
+    activeCdpSource = String(target.cdpUrl || '').trim();
+    return {
+      env: 'LOCAL',
+      localBrowserLaunchOptions: {
+        cdpUrl: ws,
+        connectTimeoutMs: 10000,
+      },
+      enableCaching: true,
+      verbose: 1,
+    };
+  }
+
+  const chromePath = getChromePath();
+  activeChromePath = chromePath;
+  activeCdpUrl = null;
+  activeCdpSource = null;
+
+  if (!fs.existsSync(chromePath)) {
+    throw new Error(
+      `Chrome not found at expected path: ${chromePath}. Install Google Chrome and try again.`,
+    );
+  }
+
   const disableSandbox = String(process.env.STAGEHAND_DISABLE_SANDBOX || '').toLowerCase() === 'true';
   const sandboxArgs =
     process.platform === 'linux' && disableSandbox
@@ -56,32 +172,11 @@ function buildCommonConfig(chromePath) {
   };
 }
 
-function buildProviderConfig() {
-  return {
-    model: {
-      modelName: 'mistral/mistral-large-latest',
-      apiKey: process.env.MISTRAL_API_KEY,
-    },
-  };
-}
-
-function buildAISdkConfig() {
-  return {
-    model: {
-      modelName: 'mistral/mistral-large-latest',
-      apiKey: process.env.MISTRAL_API_KEY,
-    },
-  };
-}
-
-function shouldFallbackToAISdk(error) {
-  const message = String(error?.message || '').toLowerCase();
+function sameTarget(target) {
   return (
-    message.includes('provider') ||
-    message.includes('modelname') ||
-    message.includes('modelclientoptions') ||
-    message.includes('unknown') ||
-    message.includes('invalid option')
+    activeConnection === target.connection &&
+    (target.connection !== 'cdp' ||
+      normalizeUrlForMatch(activeCdpSource) === normalizeUrlForMatch(target.cdpUrl))
   );
 }
 
@@ -106,64 +201,78 @@ async function resolvePage(sh) {
   throw new Error('Stagehand page is unavailable after init.');
 }
 
-async function initWithMode(mode, chromePath) {
-  const baseConfig = buildCommonConfig(chromePath);
-  const modeConfig = mode === 'aisdk' ? buildAISdkConfig() : buildProviderConfig();
+function pickBestMatchingPage(pages, tabUrl) {
+  if (!Array.isArray(pages) || pages.length === 0) return null;
+  if (!tabUrl) return pages[0];
 
+  const targetExact = normalizeUrlForMatch(tabUrl);
+  const targetPath = stripQueryAndHash(tabUrl);
+  const targetHost = (() => {
+    try {
+      return new URL(tabUrl).hostname;
+    } catch {
+      return '';
+    }
+  })();
+
+  const exact = pages.find((page) => normalizeUrlForMatch(page.url()) === targetExact);
+  if (exact) return exact;
+
+  const pathMatch = pages.find((page) => stripQueryAndHash(page.url()) === targetPath);
+  if (pathMatch) return pathMatch;
+
+  const hostMatch = pages.find((page) => {
+    try {
+      return new URL(page.url()).hostname === targetHost;
+    } catch {
+      return false;
+    }
+  });
+  if (hostMatch) return hostMatch;
+
+  return null;
+}
+
+async function initWithTarget(mode, target) {
+  const baseConfig = await buildCommonConfig(target);
+  const modeConfig = buildModeConfig(mode);
   const sh = new Stagehand({
     ...baseConfig,
     ...modeConfig,
   });
 
   await sh.init();
-
-  // Build-time/runtime verification check: run a tiny call to validate LLM path.
-  try {
-    const page = await resolvePage(sh);
-    await page.goto('about:blank', { waitUntil: 'domcontentloaded' });
-    if (typeof sh.observe === 'function') {
-      await sh.observe('List interactive elements visible on this page.', { page, iframes: true });
-    } else if (typeof page.observe === 'function') {
-      await page.observe('List interactive elements visible on this page.', { iframes: true });
-    }
-  } catch (verificationError) {
-    console.warn(
-      '[stagehand] verification observe() check did not fully complete:',
-      verificationError?.message || verificationError,
-    );
-  }
-
+  activeConnection = target.connection;
   return sh;
 }
 
-export async function getStagehand() {
-  if (stagehandInstance) return stagehandInstance;
-
+export async function getStagehand(options = {}) {
   if (!process.env.MISTRAL_API_KEY) {
     throw new Error('MISTRAL_API_KEY is missing. Add it to .env before starting the server.');
   }
 
-  const chromePath = getChromePath();
-  activeChromePath = chromePath;
-
-  if (!fs.existsSync(chromePath)) {
-    throw new Error(
-      `Chrome not found at expected path: ${chromePath}. Install Google Chrome and try again.`,
-    );
-  }
-
+  const target = {
+    connection: options.connection === 'cdp' ? 'cdp' : 'local',
+    cdpUrl: options.cdpUrl || '',
+  };
   const requestedMode = (process.env.STAGEHAND_MODE || DEFAULT_STAGEHAND_MODE).toLowerCase();
 
+  if (stagehandInstance && sameTarget(target)) {
+    return stagehandInstance;
+  }
+
+  if (stagehandInstance) {
+    await stagehandInstance.close().catch(() => {});
+    stagehandInstance = null;
+    activeMode = null;
+  }
+
   try {
-    stagehandInstance = await initWithMode(requestedMode, chromePath);
+    stagehandInstance = await initWithTarget(requestedMode, target);
     activeMode = requestedMode;
   } catch (error) {
     if (requestedMode === 'provider' && shouldFallbackToAISdk(error)) {
-      console.warn(
-        '[stagehand] provider/modelName/modelClientOptions not supported, falling back to aisdk mode:',
-        error?.message || error,
-      );
-      stagehandInstance = await initWithMode('aisdk', chromePath);
+      stagehandInstance = await initWithTarget('aisdk', target);
       activeMode = 'aisdk';
     } else {
       throw error;
@@ -173,57 +282,89 @@ export async function getStagehand() {
   return stagehandInstance;
 }
 
-export async function getPage() {
-  const sh = await getStagehand();
+export async function attachToDemoTab(tabUrl, cdpUrl) {
+  const sh = await getStagehand({ connection: 'cdp', cdpUrl });
+  const context = sh?.context || sh?.browserContext;
+  const pages = typeof context?.pages === 'function' ? context.pages() : [];
+  const best = pickBestMatchingPage(pages, tabUrl);
+  if (!best) {
+    const available = (pages || []).slice(0, 10).map((page) => page.url());
+    throw new Error(
+      `Could not find an attached tab matching ${tabUrl}. Available tabs: ${available.join(' | ') || 'none'}`,
+    );
+  }
+
+  if (typeof context?.setActivePage === 'function') {
+    context.setActivePage(best);
+  }
+  sh.page = best;
+  return best;
+}
+
+export async function getPage(options = {}) {
+  const sh = await getStagehand(options);
   return resolvePage(sh);
 }
 
 export async function observePage(instruction, options = {}) {
-  const sh = await getStagehand();
-  const page = options.page || (await resolvePage(sh));
+  const { page: incomingPage, connection = 'local', cdpUrl = null, ...observeOptions } = options;
+  const sh = await getStagehand({ connection, cdpUrl });
+  const page = incomingPage || (await resolvePage(sh));
 
   if (typeof sh.observe === 'function') {
-    return sh.observe(instruction, { ...options, page });
+    return sh.observe(instruction, { ...observeOptions, page });
   }
 
   if (typeof page.observe === 'function') {
-    return page.observe(instruction, options);
+    return page.observe(instruction, observeOptions);
   }
 
   throw new Error('Neither stagehand.observe() nor page.observe() is available.');
 }
 
 export async function actOnPage(action, options = {}) {
-  const sh = await getStagehand();
-  const page = options.page || (await resolvePage(sh));
+  const { page: incomingPage, connection = 'local', cdpUrl = null, ...actOptions } = options;
+  const sh = await getStagehand({ connection, cdpUrl });
+  const page = incomingPage || (await resolvePage(sh));
 
   if (typeof sh.act === 'function') {
-    return sh.act(action, { ...options, page });
+    return sh.act(action, { ...actOptions, page });
   }
 
   if (typeof page.act === 'function') {
-    return page.act(action, options);
+    return page.act(action, actOptions);
   }
 
   throw new Error('Neither stagehand.act() nor page.act() is available.');
 }
 
-export async function navigateTo(url) {
+export async function navigateTo(url, options = {}) {
   if (!url) throw new Error('navigateTo requires a URL.');
 
-  const sh = await getStagehand();
-  const page = await resolvePage(sh);
+  const page = await getPage(options);
   const currentUrl = page.url();
 
-  if (currentUrl === url) return sh.page;
+  if (currentUrl !== url) {
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+  }
 
-  await page.goto(url, { waitUntil: 'domcontentloaded' });
+  try {
+    await page.waitForLoadState('networkidle', { timeout: 7000 });
+  } catch {
+    // Best effort only.
+  }
+
+  try {
+    await page.waitForTimeout(800);
+  } catch {
+    // Best effort only.
+  }
+
   return page;
 }
 
 export async function closeStagehand() {
   if (!stagehandInstance) return;
-
   await stagehandInstance.close();
   stagehandInstance = null;
   activeMode = null;
@@ -234,5 +375,7 @@ export function getStagehandStatus() {
     mode: activeMode || (process.env.STAGEHAND_MODE || DEFAULT_STAGEHAND_MODE).toLowerCase(),
     chromePath: activeChromePath || getChromePath(),
     initialized: Boolean(stagehandInstance),
+    connection: activeConnection,
+    cdpUrl: activeCdpUrl,
   };
 }

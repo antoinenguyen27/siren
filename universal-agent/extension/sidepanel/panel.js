@@ -57,6 +57,10 @@ function setMicActiveUi(active) {
   micSectionEl.classList.toggle('active', active);
   liveTranscriptEl.classList.toggle('active', active);
   micBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  if (mode === 'demo') {
+    micBtn.textContent = active ? 'Demo\nRecording' : 'Demo\nReady';
+    return;
+  }
   micBtn.textContent = active ? 'Stop\nRecording' : 'Tap To\nTalk';
 }
 
@@ -73,6 +77,7 @@ function setModeButtons(activeMode) {
 
   setPair(startDemoBtn, stopDemoBtn, activeMode === 'demo');
   setPair(startWorkBtn, stopWorkBtn, activeMode === 'work');
+  micBtn.disabled = activeMode === 'idle';
 }
 
 function getSpeechRecognitionConstructor() {
@@ -175,6 +180,12 @@ async function getUserMediaWithPermissionFallback(constraints) {
 async function getActiveTabUrl() {
   const response = await chrome.runtime.sendMessage({ type: 'GET_ACTIVE_TAB_URL' });
   return response?.url || null;
+}
+
+async function getDemoCdpUrl() {
+  const { demo_cdp_url } = await chrome.storage.local.get(['demo_cdp_url']);
+  const value = String(demo_cdp_url || '').trim();
+  return value || 'http://127.0.0.1:9222/json/version';
 }
 
 async function postJson(path, body) {
@@ -298,13 +309,24 @@ async function refreshSkills() {
 
 async function startDemo() {
   try {
+    appendDebugLog('[ui] start-demo clicked');
+    if (isPttActive) {
+      await stopPushToTalkCapture();
+    }
     const tabUrl = await getActiveTabUrl();
     if (!tabUrl) {
       setStatus('No active tab URL found. Open a normal web page.');
       return;
     }
 
-    await postJson('/demo/start', { tabUrl });
+    const demoCdpUrl = await getDemoCdpUrl();
+    setStatus('Connecting demo observer to your browser via CDP...');
+    const startPayload = await postJson('/demo/start', {
+      tabUrl,
+      demoCdpUrl,
+    });
+    appendDebugLog(`[demo] cdp connected via ${demoCdpUrl}`);
+    if (startPayload?.attachedUrl) appendDebugLog(`[demo] attached tab url=${startPayload.attachedUrl}`);
     appendDebugLog(`[demo] started for tab ${tabUrl}`);
     demoTabUrl = tabUrl;
 
@@ -319,6 +341,7 @@ async function startDemo() {
 }
 
 async function stopDemo() {
+  appendDebugLog('[ui] stop-demo clicked');
   const fallbackTabUrl = demoTabUrl;
   mode = 'idle';
   setModeButtons('idle');
@@ -365,11 +388,14 @@ async function stopDemo() {
     }
 
     setLiveTranscript(transcript);
+    const demoCdpUrl = await getDemoCdpUrl();
     setStatus('Writing skill from full demo transcript...');
+    appendDebugLog(`[demo] using cdp url ${demoCdpUrl}`);
     const activeTabUrl = await getActiveTabUrl();
     const data = await postJson('/demo/voice-segment', {
       transcript,
       tabUrl: activeTabUrl || fallbackTabUrl,
+      demoCdpUrl,
     });
     appendDebugLogs(data?.debugLogs, '[server]');
 
@@ -389,12 +415,14 @@ async function stopDemo() {
 }
 
 async function startWork() {
+  appendDebugLog('[ui] start-work clicked');
   mode = 'work';
   setModeButtons('work');
   setStatus('Work mode active: tap the mic to start and stop.');
 }
 
 async function stopWork() {
+  appendDebugLog('[ui] stop-work clicked');
   mode = 'idle';
   setModeButtons('idle');
   await stopPushToTalkCapture();
@@ -427,6 +455,7 @@ async function startContinuousTranscription(initialTabUrl) {
   };
 
   demoRecorder.start();
+  setMicActiveUi(true);
   setLiveTranscript('Recording demo narration...', true);
 }
 
@@ -472,11 +501,7 @@ function blobToBase64(blob) {
 
 async function beginPushToTalkCapture() {
   if (isPttActive) return;
-  if (mode !== 'work') {
-    mode = 'work';
-    setModeButtons('work');
-    setStatus('Work mode active: tap the mic to start and stop.');
-  }
+  if (mode !== 'work') return;
 
   isPttActive = true;
   pttChunks = [];
@@ -655,6 +680,15 @@ skillsListEl.addEventListener('click', async (event) => {
 });
 
 micBtn.addEventListener('click', () => {
+  appendDebugLog(`[ui] mic clicked mode=${mode} pttActive=${isPttActive}`);
+  if (mode === 'demo') {
+    setStatus('Demo is recording. Press Stop Demo to finish and write skill.');
+    return;
+  }
+  if (mode !== 'work') {
+    setStatus('Mic is available in Work mode only. Press Start Work first.');
+    return;
+  }
   if (isPttActive) {
     stopPushToTalkCapture();
   } else {

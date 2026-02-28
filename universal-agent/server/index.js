@@ -2,9 +2,11 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import {
+  attachToDemoTab,
   closeStagehand,
   getStagehand,
   getStagehandStatus,
+  getPage,
   navigateTo,
   observePage,
 } from './stagehand-manager.js';
@@ -52,21 +54,36 @@ function shouldRefuseForSafety(text) {
   return blockedSignals.some((signal) => lowered.includes(signal));
 }
 
+function isGoogleAuthUrl(value) {
+  try {
+    const parsed = new URL(String(value || ''));
+    return parsed.hostname === 'accounts.google.com';
+  } catch {
+    return false;
+  }
+}
+
 app.get('/health', (req, res) => {
   const stagehandStatus = getStagehandStatus();
   res.json({ ok: true, stagehand: stagehandStatus });
 });
 
 app.post('/demo/start', async (req, res) => {
-  const { tabUrl } = req.body || {};
+  const { tabUrl, demoCdpUrl } = req.body || {};
 
   if (!isValidUrl(tabUrl)) {
     return res.status(400).json({ error: 'tabUrl must be a valid http(s) URL.' });
   }
+  if (!demoCdpUrl || !String(demoCdpUrl).trim()) {
+    return res.status(400).json({ error: 'demoCdpUrl is required for demo mode.' });
+  }
 
   try {
-    await navigateTo(tabUrl);
-    return res.json({ ok: true });
+    const page = await attachToDemoTab(tabUrl, String(demoCdpUrl));
+    return res.json({
+      ok: true,
+      attachedUrl: page.url(),
+    });
   } catch (error) {
     console.error('[demo/start] failed:', error);
     return res.status(500).json({ error: error?.message || 'Failed to start demo mode.' });
@@ -74,27 +91,92 @@ app.post('/demo/start', async (req, res) => {
 });
 
 app.post('/demo/voice-segment', async (req, res) => {
-  const { transcript, tabUrl } = req.body || {};
+  const { transcript, tabUrl, demoCdpUrl } = req.body || {};
   const debugLogs = [];
   const debug = (message) => debugLogs.push(message);
 
   if (!transcript || !String(transcript).trim()) {
     return res.json({ ok: true, skipped: true, debugLogs });
   }
+  if (!demoCdpUrl || !String(demoCdpUrl).trim()) {
+    return res.status(400).json({ error: 'demoCdpUrl is required for demo mode.', debugLogs });
+  }
 
   try {
     if (isValidUrl(tabUrl)) {
-      debug(`[demo] navigateTo("${tabUrl}")`);
-      await navigateTo(tabUrl);
-      debug('[demo] navigation complete');
+      const attached = await attachToDemoTab(tabUrl, String(demoCdpUrl));
+      debug(`[demo] attached to tab "${attached.url()}"`);
     }
 
-    debug('[demo] observing page for transcript relevance');
-    const observedElements = await observePage(
-      `Find all interactive elements relevant to: "${String(transcript)}"`,
-      { iframes: true },
-    );
-    debug(`[demo] observe returned ${observedElements.length} elements`);
+    try {
+      const page = await getPage({ connection: 'cdp', cdpUrl: String(demoCdpUrl) });
+      const currentUrl = page.url();
+      const title = await page.title().catch(() => '');
+      const frameCount = page.frames ? page.frames().length : 0;
+      debug(`[demo] page diagnostics: url="${currentUrl}" title="${title}" frames=${frameCount}`);
+      if (isGoogleAuthUrl(currentUrl)) {
+        debug('[demo] blocked: Stagehand browser is on Google auth page, not the app page');
+        return res.status(409).json({
+          error:
+            'Stagehand is currently on Google sign-in. Sign in inside the Stagehand Chrome window, then retry demo capture.',
+          debugLogs,
+        });
+      }
+    } catch (diagError) {
+      debug(`[demo] page diagnostics failed: ${diagError?.message || diagError}`);
+    }
+
+    let observedElements = [];
+    const attempts = [
+      {
+        label: 'relevance+iframes',
+        instruction: `Find all interactive elements relevant to: "${String(transcript)}"`,
+        options: { iframes: true },
+      },
+      {
+        label: 'generic+iframes',
+        instruction: 'List interactive elements visible on the page. Include menus, toolbar buttons, and controls.',
+        options: { iframes: true },
+      },
+      {
+        label: 'generic+topframe',
+        instruction: 'List interactive elements visible on the page.',
+        options: { iframes: false },
+      },
+    ];
+
+    for (const attempt of attempts) {
+      debug(`[demo] observe attempt ${attempt.label} start`);
+      try {
+        const result = await observePage(attempt.instruction, {
+          ...attempt.options,
+          connection: 'cdp',
+          cdpUrl: String(demoCdpUrl),
+        });
+        const count = Array.isArray(result) ? result.length : 0;
+        debug(`[demo] observe attempt ${attempt.label} returned ${count} elements`);
+        if (Array.isArray(result) && result.length > 0) {
+          observedElements = result;
+          const preview = result
+            .slice(0, 5)
+            .map((element, index) => `[${index + 1}] ${element?.description || 'Unknown element'}`)
+            .join(' | ');
+          if (preview) {
+            debug(`[demo] observe sample: ${preview}`);
+          }
+          break;
+        }
+      } catch (observeError) {
+        debug(`[demo] observe attempt ${attempt.label} failed: ${observeError?.message || observeError}`);
+      }
+
+      try {
+        const page = await getPage({ connection: 'cdp', cdpUrl: String(demoCdpUrl) });
+        await page.waitForTimeout(1200);
+      } catch {
+        // Ignore retry delay failures.
+      }
+    }
 
     debug('[demo] writing skill from transcript + observed elements');
     const skillName = await writeSkillFromSegment(String(transcript), observedElements, tabUrl);

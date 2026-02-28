@@ -21,44 +21,53 @@ function createLogger(debugLog) {
 function buildTools({ debugLog } = {}) {
   const log = createLogger(debugLog);
   const retryByStep = new Map();
+  const runActionWithRetry = async ({ stepDescription, stepKey, execute, toolName }) => {
+    try {
+      await execute();
+      retryByStep.delete(stepKey);
+      log(`[tool:${toolName}] success step="${stepDescription}"`);
+      return `Success: ${stepDescription}`;
+    } catch (error) {
+      const retries = (retryByStep.get(stepKey) || 0) + 1;
+      retryByStep.set(stepKey, retries);
+      log(`[tool:${toolName}] failure step="${stepDescription}" attempt=${retries} error="${error?.message || error}"`);
+
+      let stateHints = [];
+      try {
+        const state = await observePage(
+          'What interactive elements are currently visible and available?',
+          { iframes: true },
+        );
+        stateHints = state
+          .slice(0, 8)
+          .map((element) => element.description)
+          .filter(Boolean);
+      } catch {
+        stateHints = [];
+      }
+
+      if (retries >= MAX_RETRIES_PER_STEP) {
+        log(`[tool:${toolName}] giving up step="${stepDescription}" after ${MAX_RETRIES_PER_STEP} retries`);
+        return `Failed permanently after ${MAX_RETRIES_PER_STEP} retries for step "${stepDescription}". Last error: ${error?.message || error}. Current page hints: ${stateHints.join(' | ') || 'none'}. Stop retrying this step and report failure in final response.`;
+      }
+
+      return `Failed attempt ${retries}/${MAX_RETRIES_PER_STEP} for step "${stepDescription}". Error: ${error?.message || error}. Current page hints: ${stateHints.join(' | ') || 'none'}. Adapt your next act() instruction using these hints.`;
+    }
+  };
 
   const actTool = tool(
     async ({ actInstruction, stepDescription }) => {
       log(`[tool:act] step="${stepDescription}" instruction="${actInstruction}"`);
       const page = await getPage();
       const stepKey = stepDescription.trim().toLowerCase();
-
-      try {
-        await actOnPage(actInstruction, { page });
-        retryByStep.delete(stepKey);
-        log(`[tool:act] success step="${stepDescription}"`);
-        return `Success: ${stepDescription}`;
-      } catch (error) {
-        const retries = (retryByStep.get(stepKey) || 0) + 1;
-        retryByStep.set(stepKey, retries);
-        log(`[tool:act] failure step="${stepDescription}" attempt=${retries} error="${error?.message || error}"`);
-
-        let stateHints = [];
-        try {
-          const state = await observePage(
-            'What interactive elements are currently visible and available?',
-            { page, iframes: true },
-          );
-          stateHints = state
-            .slice(0, 8)
-            .map((element) => element.description)
-            .filter(Boolean);
-        } catch {
-          stateHints = [];
-        }
-
-        if (retries >= MAX_RETRIES_PER_STEP) {
-          log(`[tool:act] giving up step="${stepDescription}" after ${MAX_RETRIES_PER_STEP} retries`);
-          return `Failed permanently after ${MAX_RETRIES_PER_STEP} retries for step "${stepDescription}". Last error: ${error?.message || error}. Current page hints: ${stateHints.join(' | ') || 'none'}. Stop retrying this step and report failure in final response.`;
-        }
-
-        return `Failed attempt ${retries}/${MAX_RETRIES_PER_STEP} for step "${stepDescription}". Error: ${error?.message || error}. Current page hints: ${stateHints.join(' | ') || 'none'}. Adapt your next act() instruction using these hints.`;
-      }
+      return runActionWithRetry({
+        stepDescription,
+        stepKey,
+        toolName: 'act',
+        execute: async () => {
+          await actOnPage(actInstruction, { page });
+        },
+      });
     },
     {
       name: 'act',
@@ -73,6 +82,37 @@ function buildTools({ debugLog } = {}) {
     },
   );
 
+  const actObservedTool = tool(
+    async ({ observedAction, stepDescription }) => {
+      const stepKey = stepDescription.trim().toLowerCase();
+      log(
+        `[tool:act_observed] step="${stepDescription}" action="${observedAction?.description || ''}" method="${observedAction?.method || ''}" selector="${observedAction?.selector || ''}"`,
+      );
+      return runActionWithRetry({
+        stepDescription,
+        stepKey,
+        toolName: 'act_observed',
+        execute: async () => {
+          await actOnPage(observedAction, {});
+        },
+      });
+    },
+    {
+      name: 'act_observed',
+      description:
+        'Execute one observed action object with higher specificity. Use this only after observe_page has returned and you have selected the exact target action.',
+      schema: z.object({
+        observedAction: z.object({
+          selector: z.string().optional().describe('Observed selector for the target element, if available.'),
+          description: z.string().describe('Observed element description.'),
+          method: z.string().describe('Observed recommended method (click/fill/type/select/etc).'),
+          arguments: z.array(z.any()).optional().describe('Observed arguments for the method.'),
+        }),
+        stepDescription: z.string().describe('Human-readable description of the current step.'),
+      }),
+    },
+  );
+
   const observeTool = tool(
     async ({ query }) => {
       log(`[tool:observe_page] query="${query}"`);
@@ -80,6 +120,7 @@ function buildTools({ debugLog } = {}) {
       log(`[tool:observe_page] found=${elements.length}`);
       return JSON.stringify(
         elements.slice(0, 10).map((element) => ({
+          selector: element.selector,
           description: element.description,
           method: element.method,
           arguments: element.arguments,
@@ -163,7 +204,7 @@ function buildTools({ debugLog } = {}) {
     },
   );
 
-  return [actTool, observeTool, readSkillsTool, readMemoryTool, navigateTool];
+  return [actTool, actObservedTool, observeTool, readSkillsTool, readMemoryTool, navigateTool];
 }
 
 export function buildWorkAgent() {

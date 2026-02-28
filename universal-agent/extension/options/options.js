@@ -1,4 +1,4 @@
-const textFieldIds = ['mistral_key', 'elevenlabs_key', 'elevenlabs_voice'];
+const textFieldIds = ['mistral_key', 'elevenlabs_key', 'elevenlabs_voice', 'demo_cdp_url'];
 const toggleIds = ['debug_mode'];
 const ids = [...textFieldIds, ...toggleIds];
 
