@@ -56,4 +56,6 @@ Rules:
 - Never include user-specific data such as document IDs, emails, or file names.
 - If narration is ambiguous or observed elements are weak/missing, set confidence to low and explain why.
 - Keep act_hint specific enough to disambiguate among similar elements.
+- Convert natural-language narration into concrete Stagehand-executable intent: each act_hint must describe one atomic UI action that Stagehand \`act()\` can execute directly.
+- Prefer imperative act_hint phrasing with target context (for example button/field/menu names) so runtime execution is deterministic.
 `;

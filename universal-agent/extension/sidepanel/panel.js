@@ -3,7 +3,9 @@ const SERVER = 'http://localhost:3000';
 let mode = 'idle';
 let demoRecorder = null;
 let demoStream = null;
-let demoRestartTimer = null;
+let demoChunks = [];
+let demoRecorderMimeType = '';
+let demoTabUrl = null;
 let pttRecorder = null;
 let pttStream = null;
 let pttChunks = [];
@@ -195,10 +197,11 @@ async function startDemo() {
     }
 
     await postJson('/demo/start', { tabUrl });
+    demoTabUrl = tabUrl;
 
     mode = 'demo';
     setModeButtons('demo');
-    setStatus('Demo mode active: narrate actions in 4s segments.');
+    setStatus('Demo mode active: narrate actions, then press Stop Demo to write skill.');
     await startContinuousTranscription(tabUrl);
   } catch (error) {
     setStatus(`Error: ${error.message}`);
@@ -206,27 +209,69 @@ async function startDemo() {
 }
 
 async function stopDemo() {
+  const fallbackTabUrl = demoTabUrl;
   mode = 'idle';
   setModeButtons('idle');
-  if (demoRestartTimer) {
-    clearTimeout(demoRestartTimer);
-    demoRestartTimer = null;
-  }
+  let recordingBlob = null;
 
   if (demoRecorder && demoRecorder.state !== 'inactive') {
+    const done = new Promise((resolve) => {
+      demoRecorder.onstop = resolve;
+    });
     demoRecorder.stop();
+    await done;
+  }
+
+  if (demoChunks.length > 0) {
+    const mimeType = demoRecorderMimeType || demoChunks[0]?.type || getPreferredAudioMimeType() || 'audio/webm';
+    recordingBlob = new Blob(demoChunks, { type: mimeType });
   }
 
   if (demoStream) {
     demoStream.getTracks().forEach((track) => track.stop());
   }
 
+  demoChunks = [];
+  demoRecorderMimeType = '';
   demoRecorder = null;
   demoStream = null;
+  demoTabUrl = null;
   setMicActiveUi(false);
-  setLiveTranscript('Demo stopped.');
+  setLiveTranscript('');
 
-  setStatus('Demo stopped.');
+  if (!recordingBlob || recordingBlob.size === 0) {
+    setStatus('Demo stopped. No audio captured.');
+    return;
+  }
+
+  try {
+    setStatus('Transcribing demo narration...');
+    const transcript = await transcribeBlob(recordingBlob);
+    if (!transcript.trim()) {
+      setStatus('Demo stopped. No speech detected.');
+      setLiveTranscript('No speech detected.');
+      return;
+    }
+
+    setLiveTranscript(transcript);
+    setStatus('Writing skill from full demo transcript...');
+    const activeTabUrl = await getActiveTabUrl();
+    const data = await postJson('/demo/voice-segment', {
+      transcript,
+      tabUrl: activeTabUrl || fallbackTabUrl,
+    });
+
+    if (data?.skillName) {
+      appendSkillLog(`Skill written: ${data.skillName}`);
+      setStatus('Demo stopped. Skill written.');
+      return;
+    }
+
+    setStatus('Demo stopped. Skill writer returned no skill name.');
+  } catch (error) {
+    appendSkillLog(`Demo failed: ${error.message}`);
+    setStatus(`Error: ${error.message}`);
+  }
 }
 
 async function startWork() {
@@ -255,56 +300,20 @@ async function startContinuousTranscription(initialTabUrl) {
   });
 
   const preferredMimeType = getPreferredAudioMimeType();
+  demoChunks = [];
   demoRecorder = preferredMimeType
     ? new MediaRecorder(demoStream, { mimeType: preferredMimeType })
     : new MediaRecorder(demoStream);
+  demoRecorderMimeType = demoRecorder.mimeType || preferredMimeType || '';
+  demoTabUrl = initialTabUrl || demoTabUrl;
 
-  demoRecorder.ondataavailable = async (event) => {
-    if (mode !== 'demo' || !event.data || event.data.size === 0) return;
-
-    try {
-      const transcript = await transcribeBlob(event.data);
-      if (!transcript.trim()) return;
-      setLiveTranscript(transcript);
-
-      const tabUrl = (await getActiveTabUrl()) || initialTabUrl;
-      const data = await postJson('/demo/voice-segment', { transcript, tabUrl });
-
-      if (data?.skillName) {
-        appendSkillLog(`Skill written: ${data.skillName}`);
-      }
-    } catch (error) {
-      appendSkillLog(`Segment failed: ${error.message}`);
-      setStatus(`Error: ${error.message}`);
-    } finally {
-      if (mode !== 'demo') return;
-      demoRestartTimer = setTimeout(() => {
-        if (mode !== 'demo' || !demoRecorder || demoRecorder.state !== 'inactive') return;
-        try {
-          demoRecorder.start();
-        } catch (restartError) {
-          setStatus(`Error: ${restartError.message}`);
-        }
-      }, 250);
-    }
+  demoRecorder.ondataavailable = (event) => {
+    if (!event.data || event.data.size === 0) return;
+    demoChunks.push(event.data);
   };
 
   demoRecorder.start();
-  demoRestartTimer = setTimeout(() => {
-    if (mode === 'demo' && demoRecorder?.state === 'recording') {
-      demoRecorder.stop();
-    }
-  }, 4000);
-
-  demoRecorder.onstart = () => {
-    if (mode !== 'demo') return;
-    if (demoRestartTimer) clearTimeout(demoRestartTimer);
-    demoRestartTimer = setTimeout(() => {
-      if (mode === 'demo' && demoRecorder?.state === 'recording') {
-        demoRecorder.stop();
-      }
-    }, 4000);
-  };
+  setLiveTranscript('Recording demo narration...', true);
 }
 
 async function transcribeBlob(blob) {
