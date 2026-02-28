@@ -10,21 +10,33 @@ import { WORK_AGENT_SYSTEM_PROMPT } from './system-prompts.js';
 
 const MAX_RETRIES_PER_STEP = 3;
 
-function buildTools() {
+function createLogger(debugLog) {
+  return (message) => {
+    if (typeof debugLog === 'function') {
+      debugLog(message);
+    }
+  };
+}
+
+function buildTools({ debugLog } = {}) {
+  const log = createLogger(debugLog);
   const retryByStep = new Map();
 
   const actTool = tool(
     async ({ actInstruction, stepDescription }) => {
+      log(`[tool:act] step="${stepDescription}" instruction="${actInstruction}"`);
       const page = await getPage();
       const stepKey = stepDescription.trim().toLowerCase();
 
       try {
         await actOnPage(actInstruction, { page });
         retryByStep.delete(stepKey);
+        log(`[tool:act] success step="${stepDescription}"`);
         return `Success: ${stepDescription}`;
       } catch (error) {
         const retries = (retryByStep.get(stepKey) || 0) + 1;
         retryByStep.set(stepKey, retries);
+        log(`[tool:act] failure step="${stepDescription}" attempt=${retries} error="${error?.message || error}"`);
 
         let stateHints = [];
         try {
@@ -41,6 +53,7 @@ function buildTools() {
         }
 
         if (retries >= MAX_RETRIES_PER_STEP) {
+          log(`[tool:act] giving up step="${stepDescription}" after ${MAX_RETRIES_PER_STEP} retries`);
           return `Failed permanently after ${MAX_RETRIES_PER_STEP} retries for step "${stepDescription}". Last error: ${error?.message || error}. Current page hints: ${stateHints.join(' | ') || 'none'}. Stop retrying this step and report failure in final response.`;
         }
 
@@ -62,7 +75,9 @@ function buildTools() {
 
   const observeTool = tool(
     async ({ query }) => {
+      log(`[tool:observe_page] query="${query}"`);
       const elements = await observePage(query, { iframes: true });
+      log(`[tool:observe_page] found=${elements.length}`);
       return JSON.stringify(
         elements.slice(0, 10).map((element) => ({
           description: element.description,
@@ -82,8 +97,10 @@ function buildTools() {
 
   const readSkillsTool = tool(
     async ({ query, siteHint }) => {
+      log(`[tool:read_skills] siteHint="${siteHint || ''}" query="${query}"`);
       const skills = siteHint ? await loadSkillsForSite(siteHint) : await loadAllSkills();
       if (skills.length === 0) {
+        log('[tool:read_skills] no skills found');
         return 'No skills recorded for this site.';
       }
 
@@ -98,6 +115,7 @@ function buildTools() {
       });
 
       const chosen = relevant.length > 0 ? relevant : skills.slice(0, 8);
+      log(`[tool:read_skills] returned=${chosen.length}`);
       return chosen
         .map((skill) => `## SKILL: ${skill.name}\n${skill.content}`)
         .join('\n\n---\n\n');
@@ -115,6 +133,7 @@ function buildTools() {
 
   const readMemoryTool = tool(
     async () => {
+      log('[tool:read_session_memory] called');
       const memory = getSessionMemory();
       if (memory.length === 0) return 'No tasks completed yet this session.';
       return memory
@@ -130,7 +149,9 @@ function buildTools() {
 
   const navigateTool = tool(
     async ({ url }) => {
+      log(`[tool:navigate] url="${url}"`);
       await navigateTo(url);
+      log(`[tool:navigate] success url="${url}"`);
       return `Navigated to ${url}`;
     },
     {
@@ -146,6 +167,10 @@ function buildTools() {
 }
 
 export function buildWorkAgent() {
+  return buildWorkAgentWithOptions();
+}
+
+export function buildWorkAgentWithOptions({ debugLog } = {}) {
   const llm = new ChatMistralAI({
     model: 'mistral-large-latest',
     apiKey: process.env.MISTRAL_API_KEY,
@@ -154,7 +179,7 @@ export function buildWorkAgent() {
 
   return createReactAgent({
     llm,
-    tools: buildTools(),
+    tools: buildTools({ debugLog }),
     checkpointSaver: new MemorySaver(),
     messageModifier: WORK_AGENT_SYSTEM_PROMPT,
   });

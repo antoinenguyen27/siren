@@ -19,6 +19,25 @@
         margin-top: 12px;
         font-size: 13px;
       }
+      .toggle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 16px;
+        padding: 10px 12px;
+        border: 1px solid #d1d5db;
+        border-radius: 10px;
+        background: #f8fafc;
+      }
+      .toggle label {
+        margin-top: 0;
+        font-weight: 600;
+      }
+      .toggle input[type='checkbox'] {
+        width: auto;
+        margin: 0;
+      }
       input {
         width: 100%;
         margin-top: 4px;
@@ -63,6 +82,11 @@
       ElevenLabs Voice ID
       <input id="elevenlabs_voice" type="text" autocomplete="off" />
     </label>
+
+    <div class="toggle">
+      <label for="debug_mode">Debug Mode</label>
+      <input id="debug_mode" type="checkbox" />
+    </div>
 
     <button id="save" type="button">Save</button>
     <p id="status"></p>

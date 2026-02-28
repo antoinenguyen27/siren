@@ -11,7 +11,8 @@ import {
 import { writeSkillFromSegment } from './skills/skill-writer.js';
 import { transcribeAudio } from './voice/transcription.js';
 import { addToSessionMemory, clearSessionMemory } from './memory/session-memory.js';
-import { buildWorkAgent, extractFinalAgentResponse } from './agent/work-agent.js';
+import { buildWorkAgentWithOptions, extractFinalAgentResponse } from './agent/work-agent.js';
+import { deleteSkill, loadAllSkills } from './skills/skill-store.js';
 
 const app = express();
 const port = Number(process.env.SERVER_PORT || 3000);
@@ -19,7 +20,7 @@ const port = Number(process.env.SERVER_PORT || 3000);
 app.use(
   cors({
     origin: true,
-    methods: ['GET', 'POST', 'OPTIONS'],
+    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
   }),
 );
@@ -74,56 +75,76 @@ app.post('/demo/start', async (req, res) => {
 
 app.post('/demo/voice-segment', async (req, res) => {
   const { transcript, tabUrl } = req.body || {};
+  const debugLogs = [];
+  const debug = (message) => debugLogs.push(message);
 
   if (!transcript || !String(transcript).trim()) {
-    return res.json({ ok: true, skipped: true });
+    return res.json({ ok: true, skipped: true, debugLogs });
   }
 
   try {
     if (isValidUrl(tabUrl)) {
+      debug(`[demo] navigateTo("${tabUrl}")`);
       await navigateTo(tabUrl);
+      debug('[demo] navigation complete');
     }
 
+    debug('[demo] observing page for transcript relevance');
     const observedElements = await observePage(
       `Find all interactive elements relevant to: "${String(transcript)}"`,
       { iframes: true },
     );
+    debug(`[demo] observe returned ${observedElements.length} elements`);
 
+    debug('[demo] writing skill from transcript + observed elements');
     const skillName = await writeSkillFromSegment(String(transcript), observedElements, tabUrl);
-    return res.json({ ok: true, skillName });
+    debug(`[demo] skill written: ${skillName}`);
+    return res.json({ ok: true, skillName, debugLogs });
   } catch (error) {
     console.error('[demo/voice-segment] failed:', error);
-    return res.status(500).json({ error: error?.message || 'Failed to write skill.' });
+    debug(`[demo] failed: ${error?.message || error}`);
+    return res.status(500).json({ error: error?.message || 'Failed to write skill.', debugLogs });
   }
 });
 
 app.post('/work/execute', async (req, res) => {
   const { audioBase64, audioMimeType, tabUrl } = req.body || {};
+  const debugLogs = [];
+  const debug = (message) => debugLogs.push(message);
 
   try {
+    debug('[work] transcribing audio payload');
     const transcript = await transcribeAudio(audioBase64, audioMimeType);
+    debug(`[work] transcript="${transcript}"`);
     if (!transcript.trim() || transcript.trim() === "I didn't catch that.") {
-      return res.json({ response: "I didn't catch that.", transcript });
+      return res.json({ response: "I didn't catch that.", transcript, debugLogs });
     }
 
     if (shouldRefuseForSafety(transcript)) {
+      debug('[work] refused for safety policy');
       return res.json({
         response:
           'I can help with navigation and general actions, but I cannot fill passwords, payment details, or other personal information.',
         transcript,
+        debugLogs,
       });
     }
 
     if (!isValidUrl(tabUrl)) {
+      debug('[work] rejected invalid tabUrl');
       return res.status(400).json({
         response: 'No valid active tab URL. Open a normal web page and try again.',
         transcript,
+        debugLogs,
       });
     }
 
+    debug(`[work] navigateTo("${tabUrl}")`);
     await navigateTo(tabUrl);
+    debug('[work] navigation complete');
 
-    const agent = buildWorkAgent();
+    const agent = buildWorkAgentWithOptions({ debugLog: debug });
+    debug('[work] invoking LangGraph agent');
     const result = await agent.invoke(
       {
         messages: [
@@ -139,8 +160,10 @@ app.post('/work/execute', async (req, res) => {
         },
       },
     );
+    debug('[work] agent invocation complete');
 
     const response = extractFinalAgentResponse(result);
+    debug(`[work] final response="${response}"`);
 
     addToSessionMemory({
       task: transcript,
@@ -148,18 +171,62 @@ app.post('/work/execute', async (req, res) => {
       timestamp: Date.now(),
     });
 
-    return res.json({ response, transcript });
+    return res.json({ response, transcript, debugLogs });
   } catch (error) {
     console.error('[work/execute] failed:', error);
+    debug(`[work] failed: ${error?.message || error}`);
     return res
       .status(500)
-      .json({ response: `I encountered an error while executing that task: ${error?.message || error}` });
+      .json({
+        response: `I encountered an error while executing that task: ${error?.message || error}`,
+        debugLogs,
+      });
   }
 });
 
 app.post('/work/stop', (req, res) => {
   clearSessionMemory();
   return res.json({ ok: true });
+});
+
+function parseSkillMetadata(skill) {
+  const siteMatch = String(skill.content || '').match(/^site:\s*(.+)$/im);
+  const confidenceMatch = String(skill.content || '').match(/^confidence:\s*(high|medium|low)$/im);
+  const intentMatch = String(skill.content || '').match(/^## Intent\s+([\s\S]*?)(?:\n## |\n---|$)/im);
+  return {
+    name: skill.name,
+    filename: skill.filename,
+    site: siteMatch?.[1]?.trim() || '',
+    confidence: confidenceMatch?.[1]?.trim() || '',
+    intent: intentMatch?.[1]?.trim() || '',
+    content: skill.content,
+  };
+}
+
+app.get('/skills', async (req, res) => {
+  try {
+    const skills = await loadAllSkills();
+    skills.sort((a, b) => a.filename.localeCompare(b.filename));
+    return res.json({
+      ok: true,
+      skills: skills.map(parseSkillMetadata),
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error?.message || 'Failed to load skills.' });
+  }
+});
+
+app.delete('/skills/:filename', async (req, res) => {
+  try {
+    const { filename } = req.params;
+    if (!filename) {
+      return res.status(400).json({ error: 'Missing skill filename.' });
+    }
+    await deleteSkill(filename);
+    return res.json({ ok: true, filename });
+  } catch (error) {
+    return res.status(500).json({ error: error?.message || 'Failed to delete skill.' });
+  }
 });
 
 const server = app.listen(port, async () => {

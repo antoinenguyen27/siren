@@ -51,6 +51,17 @@ export async function loadAllSkills() {
   return loadSkillsMatching(() => true);
 }
 
+export async function deleteSkill(filename) {
+  const safe = path.basename(String(filename || ''));
+  if (!safe.endsWith('.md')) {
+    throw new Error('Invalid skill filename.');
+  }
+
+  const fullPath = path.join(SKILLS_DIR, safe);
+  await fs.unlink(fullPath);
+  return { filename: safe, path: fullPath };
+}
+
 async function loadSkillsMatching(predicate) {
   try {
     await fs.mkdir(SKILLS_DIR, { recursive: true });

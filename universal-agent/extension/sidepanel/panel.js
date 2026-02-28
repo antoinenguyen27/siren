@@ -14,9 +14,14 @@ let pttRecorderMimeType = '';
 let speechRecognition = null;
 let recognitionSessionId = 0;
 let latestPreviewTranscript = '';
+let isDebugMode = false;
 
 const statusEl = document.getElementById('status');
 const skillLogEl = document.getElementById('skill-log');
+const skillsListEl = document.getElementById('skills-list');
+const skillsEmptyEl = document.getElementById('skills-empty');
+const debugSectionEl = document.getElementById('debug-section');
+const debugLogEl = document.getElementById('debug-log');
 const micBtn = document.getElementById('mic-btn');
 const micSectionEl = document.querySelector('.mic-section');
 const liveTranscriptEl = document.getElementById('live-transcript');
@@ -188,6 +193,109 @@ async function postJson(path, body) {
   return payload;
 }
 
+async function getJson(path) {
+  const response = await fetch(`${SERVER}${path}`, { method: 'GET' });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = payload?.error || `Request failed (${response.status})`;
+    throw new Error(message);
+  }
+  return payload;
+}
+
+async function deleteJson(path) {
+  const response = await fetch(`${SERVER}${path}`, { method: 'DELETE' });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = payload?.error || `Request failed (${response.status})`;
+    throw new Error(message);
+  }
+  return payload;
+}
+
+function appendDebugLog(message) {
+  if (!isDebugMode) return;
+  const item = document.createElement('div');
+  item.textContent = `${new Date().toLocaleTimeString()} - ${message}`;
+  debugLogEl.prepend(item);
+}
+
+function appendDebugLogs(logs, source) {
+  if (!Array.isArray(logs) || logs.length === 0) return;
+  for (const entry of logs) {
+    appendDebugLog(`${source} ${String(entry || '')}`);
+  }
+}
+
+function setDebugMode(enabled) {
+  isDebugMode = Boolean(enabled);
+  debugSectionEl.classList.toggle('hidden', !isDebugMode);
+}
+
+function buildSkillCard(skill) {
+  const card = document.createElement('article');
+  card.className = 'skill-card';
+  card.dataset.filename = skill.filename;
+
+  const site = skill.site || 'unknown';
+  const confidence = skill.confidence || 'n/a';
+  const intent = (skill.intent || '').trim() || 'No intent summary.';
+  const header = document.createElement('div');
+  header.className = 'skill-card-header';
+
+  const titleWrap = document.createElement('div');
+  const title = document.createElement('h3');
+  title.className = 'skill-card-title';
+  title.textContent = skill.name || 'Unnamed skill';
+  const meta = document.createElement('p');
+  meta.className = 'skill-meta';
+  meta.textContent = `site: ${site} | confidence: ${confidence}`;
+  titleWrap.append(title, meta);
+
+  const actions = document.createElement('div');
+  actions.className = 'skill-card-actions';
+  const deleteBtn = document.createElement('button');
+  deleteBtn.type = 'button';
+  deleteBtn.className = 'btn-small btn-danger';
+  deleteBtn.dataset.action = 'delete-skill';
+  deleteBtn.textContent = 'Delete';
+  actions.appendChild(deleteBtn);
+
+  header.append(titleWrap, actions);
+
+  const intentEl = document.createElement('p');
+  intentEl.className = 'skill-intent';
+  intentEl.textContent = intent;
+
+  const details = document.createElement('details');
+  details.className = 'skill-content';
+  const summary = document.createElement('summary');
+  summary.textContent = 'View skill markdown';
+  const markdown = document.createElement('pre');
+  markdown.className = 'skill-markdown';
+  markdown.textContent = skill.content || '';
+  details.append(summary, markdown);
+
+  card.append(header, intentEl, details);
+  return card;
+}
+
+async function refreshSkills() {
+  try {
+    const payload = await getJson('/skills');
+    const skills = Array.isArray(payload?.skills) ? payload.skills : [];
+
+    skillsListEl.innerHTML = '';
+    for (const skill of skills) {
+      skillsListEl.appendChild(buildSkillCard(skill));
+    }
+    skillsEmptyEl.classList.toggle('hidden', skills.length > 0);
+  } catch (error) {
+    appendSkillLog(`Failed to load skills: ${error.message}`);
+    setStatus(`Error: ${error.message}`);
+  }
+}
+
 async function startDemo() {
   try {
     const tabUrl = await getActiveTabUrl();
@@ -197,6 +305,7 @@ async function startDemo() {
     }
 
     await postJson('/demo/start', { tabUrl });
+    appendDebugLog(`[demo] started for tab ${tabUrl}`);
     demoTabUrl = tabUrl;
 
     mode = 'demo';
@@ -204,6 +313,7 @@ async function startDemo() {
     setStatus('Demo mode active: narrate actions, then press Stop Demo to write skill.');
     await startContinuousTranscription(tabUrl);
   } catch (error) {
+    appendDebugLog(`[demo] start failed: ${error.message}`);
     setStatus(`Error: ${error.message}`);
   }
 }
@@ -240,6 +350,7 @@ async function stopDemo() {
   setLiveTranscript('');
 
   if (!recordingBlob || recordingBlob.size === 0) {
+    appendDebugLog('[demo] stop with empty recording');
     setStatus('Demo stopped. No audio captured.');
     return;
   }
@@ -260,9 +371,11 @@ async function stopDemo() {
       transcript,
       tabUrl: activeTabUrl || fallbackTabUrl,
     });
+    appendDebugLogs(data?.debugLogs, '[server]');
 
     if (data?.skillName) {
       appendSkillLog(`Skill written: ${data.skillName}`);
+      await refreshSkills();
       setStatus('Demo stopped. Skill written.');
       return;
     }
@@ -270,6 +383,7 @@ async function stopDemo() {
     setStatus('Demo stopped. Skill writer returned no skill name.');
   } catch (error) {
     appendSkillLog(`Demo failed: ${error.message}`);
+    appendDebugLog(`[demo] stop failed: ${error.message}`);
     setStatus(`Error: ${error.message}`);
   }
 }
@@ -393,6 +507,7 @@ async function beginPushToTalkCapture() {
     pttRecorder = null;
     pttRecorderMimeType = '';
     setMicActiveUi(false);
+    appendDebugLog(`[work] capture start failed: ${error.message}`);
     setStatus(`Error: ${error.message}`);
   }
 }
@@ -448,6 +563,7 @@ async function stopPushToTalkCapture() {
       audioMimeType: mimeType,
       tabUrl,
     });
+    appendDebugLogs(payload?.debugLogs, '[server]');
     const transcript = String(payload?.transcript || '').trim();
     if (transcript) {
       setLiveTranscript(transcript);
@@ -460,6 +576,7 @@ async function stopPushToTalkCapture() {
     // Mic intentionally remains off after speaking.
     setStatus('Ready. Hold mic button for next instruction.');
   } catch (error) {
+    appendDebugLog(`[work] execute failed: ${error.message}`);
     setStatus(`Error: ${error.message}`);
   }
 }
@@ -515,6 +632,27 @@ document.getElementById('start-demo').addEventListener('click', startDemo);
 document.getElementById('stop-demo').addEventListener('click', stopDemo);
 document.getElementById('start-work').addEventListener('click', startWork);
 document.getElementById('stop-work').addEventListener('click', stopWork);
+skillsListEl.addEventListener('click', async (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement) || target.dataset.action !== 'delete-skill') return;
+
+  const card = target.closest('.skill-card');
+  const filename = card?.dataset?.filename;
+  if (!filename) return;
+
+  target.setAttribute('disabled', 'true');
+  try {
+    await deleteJson(`/skills/${encodeURIComponent(filename)}`);
+    appendSkillLog(`Skill deleted: ${filename}`);
+    appendDebugLog(`[skills] deleted ${filename}`);
+    await refreshSkills();
+  } catch (error) {
+    appendSkillLog(`Delete failed: ${error.message}`);
+    setStatus(`Error: ${error.message}`);
+  } finally {
+    target.removeAttribute('disabled');
+  }
+});
 
 micBtn.addEventListener('click', () => {
   if (isPttActive) {
@@ -525,3 +663,17 @@ micBtn.addEventListener('click', () => {
 });
 
 setModeButtons('idle');
+(async () => {
+  try {
+    const data = await chrome.storage.local.get(['debug_mode']);
+    setDebugMode(Boolean(data?.debug_mode));
+    await refreshSkills();
+  } catch (error) {
+    setStatus(`Error: ${error.message}`);
+  }
+})();
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local' || !Object.prototype.hasOwnProperty.call(changes, 'debug_mode')) return;
+  setDebugMode(Boolean(changes.debug_mode?.newValue));
+});

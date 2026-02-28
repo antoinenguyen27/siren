@@ -200,3 +200,127 @@ body {
 .skill-log > div:last-child {
   border-bottom: 0;
 }
+
+.skills-list {
+  display: grid;
+  gap: 8px;
+}
+
+.skill-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 8px;
+}
+
+.skill-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.skill-card-title {
+  margin: 0;
+  font-size: 13px;
+}
+
+.skill-meta {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.skill-card-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.btn-small {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.btn-danger {
+  border-color: #ef4444;
+  color: #b91c1c;
+  background: #fff5f5;
+}
+
+.skill-intent {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.skill-content {
+  margin-top: 8px;
+}
+
+.skill-content summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--primary);
+}
+
+.skill-markdown {
+  margin: 8px 0 0;
+  max-height: 160px;
+  overflow: auto;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: #fafafa;
+  padding: 8px;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.empty-state {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: #fafafa;
+  color: var(--muted);
+  padding: 8px;
+  font-size: 12px;
+}
+
+.hidden {
+  display: none;
+}
+
+.debug {
+  margin-top: 12px;
+}
+
+.debug h2 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.debug-log {
+  min-height: 100px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #0f172a;
+  color: #dbeafe;
+  padding: 8px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.debug-log > div {
+  padding: 2px 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.debug-log > div:last-child {
+  border-bottom: 0;
+}
