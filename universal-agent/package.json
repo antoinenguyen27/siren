@@ -1,0 +1,25 @@
+{
+  "name": "universal-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "server": "node server/index.js",
+    "generate-training-data": "node scripts/generate-training-data.js"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^1.3.22",
+    "@browserbasehq/stagehand": "^3.0.0",
+    "@langchain/core": "^0.3.79",
+    "@langchain/langgraph": "^0.4.4",
+    "@langchain/mistralai": "^0.2.3",
+    "@mistralai/mistralai": "^1.8.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "zod": "^3.25.76"
+  }
+}
