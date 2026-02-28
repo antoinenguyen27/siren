@@ -72,9 +72,9 @@ The extension never injects scripts or manipulates page DOM. The agent never con
 
 ## Build-Time/Startup Verification
 
-- Stagehand config defaults to `provider/modelName/modelClientOptions`
+- Stagehand config defaults to `aisdk` mode using native Stagehand Mistral provider (`mistral/...`)
 - On startup, server runs a Stagehand verification call (`goto` + `observe`)
-- If provider mode is unsupported, it falls back to `STAGEHAND_MODE=aisdk`
+- If provider mode is selected and unsupported, it falls back to `STAGEHAND_MODE=aisdk`
 - You can force mode via `.env`:
   - `STAGEHAND_MODE=provider`
   - `STAGEHAND_MODE=aisdk`
@@ -82,7 +82,7 @@ The extension never injects scripts or manipulates page DOM. The agent never con
 
 ## Design Decisions
 
-- `STAGEHAND_MODE` was added because Stagehand model wiring has changed across releases; provider mode remains default, AISDK is fallback.
+- `STAGEHAND_MODE` was added because Stagehand model wiring has changed across releases; AISDK is the default for Mistral compatibility, provider mode is optional.
 - Skill filenames use `domain__skillname.md` with domain preserved (dots intact) so `loadSkillsForSite()` can reliably match by `domain__` prefix.
 - Server-side transcription returns `"I didn't catch that."` for empty/failed transcript to keep work loop stable.
 - Skill writer enforces verbatim observed element text by post-processing action `element:` lines against observe results.

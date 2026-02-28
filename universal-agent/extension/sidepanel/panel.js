@@ -3,14 +3,29 @@ const SERVER = 'http://localhost:3000';
 let mode = 'idle';
 let demoRecorder = null;
 let demoStream = null;
+let demoRestartTimer = null;
 let pttRecorder = null;
 let pttStream = null;
 let pttChunks = [];
 let isPttActive = false;
+let pttRecorderMimeType = '';
 
 const statusEl = document.getElementById('status');
 const skillLogEl = document.getElementById('skill-log');
 const micBtn = document.getElementById('mic-btn');
+
+function getPreferredAudioMimeType() {
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
+  return candidates.find((mime) => MediaRecorder.isTypeSupported(mime)) || '';
+}
+
+function extensionForMimeType(mimeType) {
+  const value = String(mimeType || '').toLowerCase();
+  if (value.includes('mp4') || value.includes('aac')) return 'm4a';
+  if (value.includes('mpeg') || value.includes('mp3')) return 'mp3';
+  if (value.includes('wav')) return 'wav';
+  return 'webm';
+}
 
 function setStatus(message) {
   statusEl.textContent = message;
@@ -20,6 +35,32 @@ function appendSkillLog(message) {
   const item = document.createElement('div');
   item.textContent = `${new Date().toLocaleTimeString()} - ${message}`;
   skillLogEl.prepend(item);
+}
+
+function isMicPermissionError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    error?.name === 'NotAllowedError' ||
+    message.includes('permission dismissed') ||
+    message.includes('permission denied') ||
+    message.includes('not allowed')
+  );
+}
+
+async function requestMicPermissionViaTab() {
+  const result = await chrome.runtime.sendMessage({ type: 'OPEN_MIC_PERMISSION_TAB' });
+  if (result?.ok) return true;
+  throw new Error(result?.error || 'Microphone permission was not granted.');
+}
+
+async function getUserMediaWithPermissionFallback(constraints) {
+  try {
+    return await navigator.mediaDevices.getUserMedia(constraints);
+  } catch (error) {
+    if (!isMicPermissionError(error)) throw error;
+    await requestMicPermissionViaTab();
+    return navigator.mediaDevices.getUserMedia(constraints);
+  }
 }
 
 async function getActiveTabUrl() {
@@ -63,6 +104,10 @@ async function startDemo() {
 
 async function stopDemo() {
   mode = 'idle';
+  if (demoRestartTimer) {
+    clearTimeout(demoRestartTimer);
+    demoRestartTimer = null;
+  }
 
   if (demoRecorder && demoRecorder.state !== 'inactive') {
     demoRecorder.stop();
@@ -97,11 +142,14 @@ async function stopWork() {
 }
 
 async function startContinuousTranscription(initialTabUrl) {
-  demoStream = await navigator.mediaDevices.getUserMedia({
+  demoStream = await getUserMediaWithPermissionFallback({
     audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true },
   });
 
-  demoRecorder = new MediaRecorder(demoStream, { mimeType: 'audio/webm;codecs=opus' });
+  const preferredMimeType = getPreferredAudioMimeType();
+  demoRecorder = preferredMimeType
+    ? new MediaRecorder(demoStream, { mimeType: preferredMimeType })
+    : new MediaRecorder(demoStream);
 
   demoRecorder.ondataavailable = async (event) => {
     if (mode !== 'demo' || !event.data || event.data.size === 0) return;
@@ -119,10 +167,35 @@ async function startContinuousTranscription(initialTabUrl) {
     } catch (error) {
       appendSkillLog(`Segment failed: ${error.message}`);
       setStatus(`Error: ${error.message}`);
+    } finally {
+      if (mode !== 'demo') return;
+      demoRestartTimer = setTimeout(() => {
+        if (mode !== 'demo' || !demoRecorder || demoRecorder.state !== 'inactive') return;
+        try {
+          demoRecorder.start();
+        } catch (restartError) {
+          setStatus(`Error: ${restartError.message}`);
+        }
+      }, 250);
     }
   };
 
-  demoRecorder.start(4000);
+  demoRecorder.start();
+  demoRestartTimer = setTimeout(() => {
+    if (mode === 'demo' && demoRecorder?.state === 'recording') {
+      demoRecorder.stop();
+    }
+  }, 4000);
+
+  demoRecorder.onstart = () => {
+    if (mode !== 'demo') return;
+    if (demoRestartTimer) clearTimeout(demoRestartTimer);
+    demoRestartTimer = setTimeout(() => {
+      if (mode === 'demo' && demoRecorder?.state === 'recording') {
+        demoRecorder.stop();
+      }
+    }, 4000);
+  };
 }
 
 async function transcribeBlob(blob) {
@@ -132,7 +205,8 @@ async function transcribeBlob(blob) {
   }
 
   const formData = new FormData();
-  formData.append('file', blob, 'audio.webm');
+  const extension = extensionForMimeType(blob.type);
+  formData.append('file', blob, `audio.${extension}`);
   formData.append('model', 'voxtral-mini-latest');
 
   const response = await fetch('https://api.mistral.ai/v1/audio/transcriptions', {
@@ -169,18 +243,32 @@ async function beginPushToTalkCapture() {
 
   isPttActive = true;
   pttChunks = [];
-  pttStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  pttRecorder = new MediaRecorder(pttStream, { mimeType: 'audio/webm;codecs=opus' });
 
-  pttRecorder.ondataavailable = (event) => {
-    if (event.data && event.data.size > 0) {
-      pttChunks.push(event.data);
-    }
-  };
+  try {
+    pttStream = await getUserMediaWithPermissionFallback({ audio: true });
+    const preferredMimeType = getPreferredAudioMimeType();
+    pttRecorder = preferredMimeType
+      ? new MediaRecorder(pttStream, { mimeType: preferredMimeType })
+      : new MediaRecorder(pttStream);
+    pttRecorderMimeType = pttRecorder.mimeType || preferredMimeType || '';
 
-  pttRecorder.start();
-  micBtn.classList.add('active');
-  setStatus('Listening...');
+    pttRecorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) {
+        pttChunks.push(event.data);
+      }
+    };
+
+    pttRecorder.start();
+    micBtn.classList.add('active');
+    setStatus('Listening...');
+  } catch (error) {
+    isPttActive = false;
+    if (pttStream) pttStream.getTracks().forEach((track) => track.stop());
+    pttStream = null;
+    pttRecorder = null;
+    pttRecorderMimeType = '';
+    setStatus(`Error: ${error.message}`);
+  }
 }
 
 async function stopPushToTalkCapture() {
@@ -212,8 +300,10 @@ async function stopPushToTalkCapture() {
 
   if (mode !== 'work') return;
 
-  const blob = new Blob(pttChunks, { type: 'audio/webm' });
+  const mimeType = pttRecorderMimeType || pttChunks[0]?.type || getPreferredAudioMimeType() || 'audio/webm';
+  const blob = new Blob(pttChunks, { type: mimeType });
   pttChunks = [];
+  pttRecorderMimeType = '';
 
   if (blob.size === 0) {
     setStatus('No audio captured. Try again.');
@@ -225,7 +315,11 @@ async function stopPushToTalkCapture() {
     const tabUrl = await getActiveTabUrl();
 
     setStatus('Thinking...');
-    const payload = await postJson('/work/execute', { audioBase64, tabUrl });
+    const payload = await postJson('/work/execute', {
+      audioBase64,
+      audioMimeType: mimeType,
+      tabUrl,
+    });
 
     const responseText = String(payload?.response || 'Done.').trim();
     setStatus('Speaking...');

@@ -3,7 +3,7 @@ import { MemorySaver } from '@langchain/langgraph';
 import { ChatMistralAI } from '@langchain/mistralai';
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
-import { getPage, navigateTo } from '../stagehand-manager.js';
+import { actOnPage, getPage, navigateTo, observePage } from '../stagehand-manager.js';
 import { loadAllSkills, loadSkillsForSite } from '../skills/skill-store.js';
 import { getSessionMemory } from '../memory/session-memory.js';
 import { WORK_AGENT_SYSTEM_PROMPT } from './system-prompts.js';
@@ -19,7 +19,7 @@ function buildTools() {
       const stepKey = stepDescription.trim().toLowerCase();
 
       try {
-        await page.act(actInstruction);
+        await actOnPage(actInstruction, { page });
         retryByStep.delete(stepKey);
         return `Success: ${stepDescription}`;
       } catch (error) {
@@ -28,9 +28,9 @@ function buildTools() {
 
         let stateHints = [];
         try {
-          const state = await page.observe(
+          const state = await observePage(
             'What interactive elements are currently visible and available?',
-            { iframes: true },
+            { page, iframes: true },
           );
           stateHints = state
             .slice(0, 8)
@@ -62,8 +62,7 @@ function buildTools() {
 
   const observeTool = tool(
     async ({ query }) => {
-      const page = await getPage();
-      const elements = await page.observe(query, { iframes: true });
+      const elements = await observePage(query, { iframes: true });
       return JSON.stringify(
         elements.slice(0, 10).map((element) => ({
           description: element.description,

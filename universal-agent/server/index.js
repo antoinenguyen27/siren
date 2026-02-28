@@ -3,10 +3,10 @@ import express from 'express';
 import cors from 'cors';
 import {
   closeStagehand,
-  getPage,
   getStagehand,
   getStagehandStatus,
   navigateTo,
+  observePage,
 } from './stagehand-manager.js';
 import { writeSkillFromSegment } from './skills/skill-writer.js';
 import { transcribeAudio } from './voice/transcription.js';
@@ -84,8 +84,7 @@ app.post('/demo/voice-segment', async (req, res) => {
       await navigateTo(tabUrl);
     }
 
-    const page = await getPage();
-    const observedElements = await page.observe(
+    const observedElements = await observePage(
       `Find all interactive elements relevant to: "${String(transcript)}"`,
       { iframes: true },
     );
@@ -99,10 +98,10 @@ app.post('/demo/voice-segment', async (req, res) => {
 });
 
 app.post('/work/execute', async (req, res) => {
-  const { audioBase64, tabUrl } = req.body || {};
+  const { audioBase64, audioMimeType, tabUrl } = req.body || {};
 
   try {
-    const transcript = await transcribeAudio(audioBase64);
+    const transcript = await transcribeAudio(audioBase64, audioMimeType);
     if (!transcript.trim() || transcript.trim() === "I didn't catch that.") {
       return res.json({ response: "I didn't catch that." });
     }
@@ -170,10 +169,15 @@ const server = app.listen(port, async () => {
     const status = getStagehandStatus();
     console.log(`[server] stagehand initialized successfully (mode=${status.mode})`);
   } catch (error) {
-    console.error('[server] stagehand initialization failed:', error?.message || error);
-    console.error(
-      '[server] hint: Chrome not found at expected path. Install Google Chrome or set CHROME_EXECUTABLE_PATH in .env.',
-    );
+    const message = error?.message || String(error);
+    console.error('[server] stagehand initialization failed:', message);
+    if (String(message).toLowerCase().includes('chrome not found at expected path')) {
+      console.error(
+        '[server] hint: Install Google Chrome or set CHROME_EXECUTABLE_PATH in .env.',
+      );
+    } else if (String(message).toLowerCase().includes('api key')) {
+      console.error('[server] hint: verify MISTRAL_API_KEY is set in .env.');
+    }
   }
 });
 

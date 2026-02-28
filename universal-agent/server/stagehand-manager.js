@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import { Stagehand } from '@browserbasehq/stagehand';
-import { createOpenAI } from '@ai-sdk/openai';
 
 let stagehandInstance = null;
 let activeMode = null;
 let activeChromePath = null;
+const DEFAULT_STAGEHAND_MODE = 'aisdk';
 
 export function getChromePath() {
   if (process.env.CHROME_EXECUTABLE_PATH) return process.env.CHROME_EXECUTABLE_PATH;
@@ -58,26 +58,19 @@ function buildCommonConfig(chromePath) {
 
 function buildProviderConfig() {
   return {
-    provider: 'openai',
-    modelName: 'mistral-large-latest',
-    modelClientOptions: {
+    model: {
+      modelName: 'mistral/mistral-large-latest',
       apiKey: process.env.MISTRAL_API_KEY,
-      baseURL: 'https://api.mistral.ai/v1',
     },
   };
 }
 
 function buildAISdkConfig() {
-  const mistralOpenAI = createOpenAI({
-    apiKey: process.env.MISTRAL_API_KEY,
-    baseURL: 'https://api.mistral.ai/v1',
-  });
-
-  const model = mistralOpenAI('mistral-large-latest');
-
-  // Stagehand versions differ here; this shape is accepted by current v3 builds.
   return {
-    model,
+    model: {
+      modelName: 'mistral/mistral-large-latest',
+      apiKey: process.env.MISTRAL_API_KEY,
+    },
   };
 }
 
@@ -90,6 +83,27 @@ function shouldFallbackToAISdk(error) {
     message.includes('unknown') ||
     message.includes('invalid option')
   );
+}
+
+async function resolvePage(sh) {
+  if (sh?.page) return sh.page;
+
+  const context = sh?.context || sh?.browserContext;
+  if (context?.pages) {
+    const pages = context.pages();
+    if (Array.isArray(pages) && pages.length > 0) {
+      sh.page = pages[0];
+      return sh.page;
+    }
+  }
+
+  if (context?.newPage) {
+    const page = await context.newPage();
+    sh.page = page;
+    return page;
+  }
+
+  throw new Error('Stagehand page is unavailable after init.');
 }
 
 async function initWithMode(mode, chromePath) {
@@ -105,10 +119,13 @@ async function initWithMode(mode, chromePath) {
 
   // Build-time/runtime verification check: run a tiny call to validate LLM path.
   try {
-    await sh.page.goto('about:blank', { waitUntil: 'domcontentloaded' });
-    await sh.page.observe('List interactive elements visible on this page.', {
-      iframes: true,
-    });
+    const page = await resolvePage(sh);
+    await page.goto('about:blank', { waitUntil: 'domcontentloaded' });
+    if (typeof sh.observe === 'function') {
+      await sh.observe('List interactive elements visible on this page.', { page, iframes: true });
+    } else if (typeof page.observe === 'function') {
+      await page.observe('List interactive elements visible on this page.', { iframes: true });
+    }
   } catch (verificationError) {
     console.warn(
       '[stagehand] verification observe() check did not fully complete:',
@@ -135,7 +152,7 @@ export async function getStagehand() {
     );
   }
 
-  const requestedMode = (process.env.STAGEHAND_MODE || 'provider').toLowerCase();
+  const requestedMode = (process.env.STAGEHAND_MODE || DEFAULT_STAGEHAND_MODE).toLowerCase();
 
   try {
     stagehandInstance = await initWithMode(requestedMode, chromePath);
@@ -158,19 +175,50 @@ export async function getStagehand() {
 
 export async function getPage() {
   const sh = await getStagehand();
-  return sh.page;
+  return resolvePage(sh);
+}
+
+export async function observePage(instruction, options = {}) {
+  const sh = await getStagehand();
+  const page = options.page || (await resolvePage(sh));
+
+  if (typeof sh.observe === 'function') {
+    return sh.observe(instruction, { ...options, page });
+  }
+
+  if (typeof page.observe === 'function') {
+    return page.observe(instruction, options);
+  }
+
+  throw new Error('Neither stagehand.observe() nor page.observe() is available.');
+}
+
+export async function actOnPage(action, options = {}) {
+  const sh = await getStagehand();
+  const page = options.page || (await resolvePage(sh));
+
+  if (typeof sh.act === 'function') {
+    return sh.act(action, { ...options, page });
+  }
+
+  if (typeof page.act === 'function') {
+    return page.act(action, options);
+  }
+
+  throw new Error('Neither stagehand.act() nor page.act() is available.');
 }
 
 export async function navigateTo(url) {
   if (!url) throw new Error('navigateTo requires a URL.');
 
   const sh = await getStagehand();
-  const currentUrl = sh.page.url();
+  const page = await resolvePage(sh);
+  const currentUrl = page.url();
 
   if (currentUrl === url) return sh.page;
 
-  await sh.page.goto(url, { waitUntil: 'domcontentloaded' });
-  return sh.page;
+  await page.goto(url, { waitUntil: 'domcontentloaded' });
+  return page;
 }
 
 export async function closeStagehand() {
@@ -183,7 +231,7 @@ export async function closeStagehand() {
 
 export function getStagehandStatus() {
   return {
-    mode: activeMode || (process.env.STAGEHAND_MODE || 'provider').toLowerCase(),
+    mode: activeMode || (process.env.STAGEHAND_MODE || DEFAULT_STAGEHAND_MODE).toLowerCase(),
     chromePath: activeChromePath || getChromePath(),
     initialized: Boolean(stagehandInstance),
   };
