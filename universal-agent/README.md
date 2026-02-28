@@ -78,6 +78,7 @@ The extension never injects scripts or manipulates page DOM. The agent never con
 - You can force mode via `.env`:
   - `STAGEHAND_MODE=provider`
   - `STAGEHAND_MODE=aisdk`
+  - Optional Linux/container fallback only: `STAGEHAND_DISABLE_SANDBOX=true`
 
 ## Design Decisions
 

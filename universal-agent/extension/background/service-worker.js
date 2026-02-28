@@ -4,6 +4,16 @@ function isTrackableUrl(url) {
   return Boolean(url && !url.startsWith('chrome://') && !url.startsWith('chrome-extension://'));
 }
 
+async function configureSidePanelBehavior() {
+  if (!chrome.sidePanel?.setPanelBehavior) return;
+
+  try {
+    await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  } catch (error) {
+    console.warn('[extension] Failed to enable openPanelOnActionClick:', error);
+  }
+}
+
 async function refreshActiveTabUrl() {
   try {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -17,12 +27,17 @@ async function refreshActiveTabUrl() {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
+  configureSidePanelBehavior();
   refreshActiveTabUrl();
 });
 
 chrome.runtime.onStartup.addListener(() => {
+  configureSidePanelBehavior();
   refreshActiveTabUrl();
 });
+
+// Ensure behavior is configured even if the worker wakes without install/startup.
+configureSidePanelBehavior();
 
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
   try {

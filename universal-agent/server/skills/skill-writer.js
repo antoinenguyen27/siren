@@ -1,4 +1,4 @@
-import Mistral from '@mistralai/mistralai';
+import { Mistral } from '@mistralai/mistralai';
 import { saveSkill } from './skill-store.js';
 import { SKILL_WRITER_SYSTEM_PROMPT } from '../agent/system-prompts.js';
 

@@ -2,7 +2,7 @@ import 'dotenv/config';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import Mistral from '@mistralai/mistralai';
+import { Mistral } from '@mistralai/mistralai';
 import { loadAllSkills } from '../server/skills/skill-store.js';
 
 const mistral = new Mistral({ apiKey: process.env.MISTRAL_API_KEY });

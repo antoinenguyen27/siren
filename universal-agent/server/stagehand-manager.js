@@ -38,12 +38,18 @@ export function getChromePath() {
 }
 
 function buildCommonConfig(chromePath) {
+  const disableSandbox = String(process.env.STAGEHAND_DISABLE_SANDBOX || '').toLowerCase() === 'true';
+  const sandboxArgs =
+    process.platform === 'linux' && disableSandbox
+      ? ['--no-sandbox', '--disable-setuid-sandbox']
+      : [];
+
   return {
     env: 'LOCAL',
     localBrowserLaunchOptions: {
       headless: false,
       executablePath: chromePath,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      args: sandboxArgs,
     },
     enableCaching: true,
     verbose: 1,
