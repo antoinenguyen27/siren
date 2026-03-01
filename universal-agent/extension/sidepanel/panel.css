@@ -179,10 +179,22 @@ body {
   background: #ffffff;
   text-align: center;
   font-size: 13px;
+  line-height: 1.2;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   cursor: pointer;
   color: var(--text);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.mic-btn.is-thinking {
+  font-size: 10.4px; /* 20% smaller than 13px */
+  line-height: 1.15;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  padding: 14px;
 }
 
 .mic-btn.active {

@@ -18,6 +18,7 @@ let speechRecognition = null;
 let recognitionSessionId = 0;
 let latestPreviewTranscript = '';
 let isDebugMode = false;
+let isRecordButtonLocked = false;
 
 const statusEl = document.getElementById('status');
 const skillLogEl = document.getElementById('skill-log');
@@ -90,12 +91,25 @@ function setActivity(state, text) {
 function refreshModeUi() {
   modeSwitchEl.checked = selectedMode === 'demo';
   modeLabelEl.textContent = selectedMode === 'demo' ? 'Demo' : 'Worker';
+  if (isRecordButtonLocked) {
+    recordBtn.classList.add('is-thinking');
+    recordBtn.textContent = 'Agent brainstorming...';
+    recordBtn.disabled = true;
+    return;
+  }
+  recordBtn.classList.remove('is-thinking');
+  recordBtn.disabled = false;
   const activeMode = currentRecordingMode();
   if (activeMode) {
     recordBtn.textContent = activeMode === 'demo' ? 'Stop Demo' : 'Stop Work';
     return;
   }
   recordBtn.textContent = selectedMode === 'demo' ? 'Start Demo' : 'Start Work';
+}
+
+function setRecordButtonLocked(locked) {
+  isRecordButtonLocked = Boolean(locked);
+  refreshModeUi();
 }
 
 function getSpeechRecognitionConstructor() {
@@ -382,6 +396,7 @@ async function startDemo() {
 
     setStatus('Demo mode active: narrate actions, then press Record again to finish.');
     setActivity('recording', 'Recording demo');
+    setRecordButtonLocked(false);
     refreshModeUi();
     await startContinuousTranscription(tabUrl);
   } catch (error) {
@@ -396,6 +411,7 @@ async function startDemo() {
     demoCaptureStartMs = null;
     appendDebugLog(`[demo] start failed: ${error.message}`);
     setActivity('idle', 'Idle');
+    setRecordButtonLocked(false);
     refreshModeUi();
     setStatus(`Error: ${error.message}`);
   }
@@ -407,6 +423,7 @@ async function stopDemo() {
   const fallbackTabId = demoTabId;
   const captureStartMs = demoCaptureStartMs;
   setActivity('processing', 'Processing demo');
+  setRecordButtonLocked(true);
   let recordingBlob = null;
   let domCapture = { frameEvents: [], sessionStartMs: captureStartMs };
 
@@ -466,6 +483,7 @@ async function stopDemo() {
   if (!recordingBlob || recordingBlob.size === 0) {
     appendDebugLog('[demo] stop with empty recording');
     setActivity('idle', 'Idle');
+    setRecordButtonLocked(false);
     setStatus('Demo stopped. No audio captured.');
     return;
   }
@@ -475,6 +493,7 @@ async function stopDemo() {
     const transcript = await transcribeBlob(recordingBlob);
     if (!transcript.trim()) {
       setActivity('idle', 'Idle');
+      setRecordButtonLocked(false);
       setStatus('Demo stopped. No speech detected.');
       setLiveTranscript('No speech detected.');
       return;
@@ -497,16 +516,19 @@ async function stopDemo() {
       appendSkillLog(`Skill written: ${data.skillName}`);
       await refreshSkills();
       setActivity('ready', 'Skill ready');
+      setRecordButtonLocked(false);
       setStatus('Demo stopped. Skill written.');
       return;
     }
 
     setActivity('idle', 'Idle');
+    setRecordButtonLocked(false);
     setStatus('Demo stopped. Skill writer returned no skill name.');
   } catch (error) {
     appendSkillLog(`Demo failed: ${error.message}`);
     appendDebugLog(`[demo] stop failed: ${error.message}`);
     setActivity('idle', 'Idle');
+    setRecordButtonLocked(false);
     setStatus(`Error: ${error.message}`);
   }
 }
@@ -583,6 +605,7 @@ async function beginPushToTalkCapture() {
   setMicActiveUi(true);
   setLiveTranscript('Listening...', true);
   setActivity('recording', 'Recording work task');
+  setRecordButtonLocked(false);
   refreshModeUi();
 
   try {
@@ -610,6 +633,7 @@ async function beginPushToTalkCapture() {
     pttRecorderMimeType = '';
     setMicActiveUi(false);
     setActivity('idle', 'Idle');
+    setRecordButtonLocked(false);
     refreshModeUi();
     appendDebugLog(`[work] capture start failed: ${error.message}`);
     setStatus(`Error: ${error.message}`);
@@ -623,6 +647,7 @@ async function stopPushToTalkCapture() {
   setMicActiveUi(false);
   stopLiveTranscriptionPreview();
   setActivity('processing', 'Processing work task');
+  setRecordButtonLocked(true);
   refreshModeUi();
 
   if (!pttRecorder || pttRecorder.state === 'inactive') {
@@ -630,6 +655,7 @@ async function stopPushToTalkCapture() {
     pttRecorder = null;
     pttStream = null;
     setActivity('idle', 'Idle');
+    setRecordButtonLocked(false);
     refreshModeUi();
     return;
   }
@@ -655,6 +681,7 @@ async function stopPushToTalkCapture() {
 
   if (blob.size === 0) {
     setActivity('idle', 'Idle');
+    setRecordButtonLocked(false);
     refreshModeUi();
     setStatus('No audio captured. Try again.');
     setLiveTranscript('No speech detected.');
@@ -679,15 +706,18 @@ async function stopPushToTalkCapture() {
 
     const responseText = String(payload?.response || 'Done.').trim();
     setStatus('Speaking...');
+    setRecordButtonLocked(true);
     await speak(responseText);
 
     // Mic intentionally remains off after speaking.
     setActivity('ready', 'Ready');
+    setRecordButtonLocked(false);
     refreshModeUi();
     setStatus('Ready. Press Record for the next instruction.');
   } catch (error) {
     appendDebugLog(`[work] execute failed: ${error.message}`);
     setActivity('idle', 'Idle');
+    setRecordButtonLocked(false);
     refreshModeUi();
     setStatus(`Error: ${error.message}`);
   }
@@ -723,8 +753,34 @@ async function speak(text) {
   );
 
   if (!response.ok) {
-    const message = `ElevenLabs TTS failed (${response.status})`;
-    throw new Error(message);
+    const requestIdHeader =
+      response.headers.get('request-id') ||
+      response.headers.get('x-request-id') ||
+      response.headers.get('x-correlation-id') ||
+      '';
+
+    let detailMessage = '';
+    let detailCode = '';
+    let requestId = requestIdHeader;
+    try {
+      const payload = await response.json();
+      const detail = payload?.detail || {};
+      detailMessage = String(detail?.message || payload?.message || '').trim();
+      detailCode = String(detail?.code || detail?.status || '').trim();
+      requestId = String(detail?.request_id || requestId || '').trim();
+    } catch {
+      try {
+        detailMessage = String(await response.text()).trim();
+      } catch {
+        detailMessage = '';
+      }
+    }
+
+    const parts = [`ElevenLabs TTS failed (${response.status})`];
+    if (detailCode) parts.push(`code=${detailCode}`);
+    if (detailMessage) parts.push(`message=${detailMessage}`);
+    if (requestId) parts.push(`request_id=${requestId}`);
+    throw new Error(parts.join(' | '));
   }
 
   const blob = await response.blob();

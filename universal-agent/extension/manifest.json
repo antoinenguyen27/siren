@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Universal Agent",
+  "name": "Universal",
   "version": "1.0.0",
   "permissions": ["activeTab", "storage", "sidePanel", "tabs", "scripting"],
   "host_permissions": ["<all_urls>"],
@@ -13,6 +13,6 @@
   },
   "options_page": "options/options.html",
   "action": {
-    "default_title": "Universal Agent"
+    "default_title": "Universal"
   }
 }
