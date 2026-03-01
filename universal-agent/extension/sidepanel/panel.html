@@ -10,34 +10,43 @@
     <main class="panel">
       <header class="panel-header">
         <h1>Universal Agent</h1>
-        <a class="options-link" href="../options/options.html" target="_blank" rel="noreferrer">Options</a>
+        <div class="header-controls">
+          <label class="mode-pill" for="mode-switch" title="Toggle between Worker and Demo mode">
+            <input id="mode-switch" type="checkbox" />
+            <span class="mode-pill-track">
+              <span class="mode-pill-thumb"></span>
+            </span>
+            <span id="mode-label" class="mode-label">Worker</span>
+          </label>
+          <a class="options-link" href="../options/options.html" target="_blank" rel="noreferrer">Options</a>
+        </div>
       </header>
 
-      <p id="status" class="status">Idle</p>
+      <p id="status" class="status debug-only" data-debug-only="true">Idle</p>
 
-      <section class="modes">
-        <button id="start-demo" class="btn">Start Demo</button>
-        <button id="stop-demo" class="btn btn-muted">Stop Demo</button>
-        <button id="start-work" class="btn">Start Work</button>
-        <button id="stop-work" class="btn btn-muted">Stop Work</button>
+      <section class="activity-strip">
+        <span id="activity-dot" class="activity-dot idle"></span>
+        <span id="activity-text" class="activity-text">Idle</span>
       </section>
 
       <section class="mic-section">
-        <button id="mic-btn" class="mic-btn" type="button" aria-pressed="false">Tap To Talk</button>
-        <div id="live-transcript" class="live-transcript" aria-live="polite">
+        <button id="record-btn" class="mic-btn" type="button" aria-pressed="false">Start Recording</button>
+        <div id="live-transcript" class="live-transcript debug-only" data-debug-only="true" aria-live="polite">
           Transcription will appear here.
         </div>
       </section>
 
-      <section class="skills">
+      <section class="skills debug-only" data-debug-only="true">
         <h2>Demo Skill Log</h2>
         <div id="skill-log" class="skill-log"></div>
       </section>
 
-      <section class="skills">
-        <h2>Skills</h2>
-        <div id="skills-empty" class="empty-state">No skills yet.</div>
-        <div id="skills-list" class="skills-list"></div>
+      <section class="skills skills-bank">
+        <details id="skills-bank" open>
+          <summary>Skills Bank</summary>
+          <div id="skills-empty" class="empty-state">No skills yet.</div>
+          <div id="skills-list" class="skills-list"></div>
+        </details>
       </section>
 
       <section id="debug-section" class="debug hidden">

@@ -263,7 +263,7 @@ app.post('/work/execute', async (req, res) => {
     );
     debug('[work] agent invocation complete');
 
-    const response = extractFinalAgentResponse(result);
+    const response = extractFinalAgentResponse(result, transcript);
     debug(`[work] final response="${response}"`);
 
     addToSessionMemory({

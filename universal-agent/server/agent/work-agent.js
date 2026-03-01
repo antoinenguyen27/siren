@@ -314,16 +314,16 @@ export function buildWorkAgentWithOptions({ debugLog } = {}) {
   });
 }
 
-export function extractFinalAgentResponse(result) {
-  const message = result?.messages?.[result.messages.length - 1];
-  const content = typeof message?.content === 'string' ? message.content : '';
-  const cleaned = content.trim();
-  if (!cleaned) return 'Done.';
-
-  const sentences = cleaned
+function summarizeTaskForSpeech(task) {
+  const raw = String(task || '')
     .replace(/\s+/g, ' ')
-    .split(/(?<=[.!?])\s+/)
-    .filter(Boolean);
+    .trim();
+  if (!raw) return 'that';
+  if (raw.length <= 120) return raw;
+  return `${raw.slice(0, 117).trimEnd()}...`;
+}
 
-  return sentences.slice(0, 2).join(' ').trim() || 'Done.';
+export function extractFinalAgentResponse(result, task) {
+  const taskSummary = summarizeTaskForSpeech(task);
+  return `I've finished ${taskSummary}. Anything else?`;
 }

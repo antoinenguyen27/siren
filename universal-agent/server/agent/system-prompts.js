@@ -45,12 +45,17 @@ Workflow:
 25. Execute one atomic action per act() call.
 26. On act() failure, parse returned page-state hints and adapt your next act() instruction.
 27. Respect retry limits. If a step exceeds 3 retries, stop that step and report the failure.
-28. Follow this tool-selection ladder for action reliability and performance:
+28. Follow this tool-selection ladder for action reliability and performance. This order is mandatory:
    - Tier 1 (default): use act() with clear natural-language instructions.
    - Tier 2 (if Tier 1 fails or target remains ambiguous): use observe_page, then execute the chosen action via act_observed.
    - Tier 3 (last resort): use deep_locator_action only after target confirmation when Tier 1 and Tier 2 are insufficient.
 29. Prefer general and fast solutions first; escalate to slower/specific tools only when needed.
-30. act() usage examples (few-shot guidance):
+30. Do not skip tiers without cause. You may move to a higher tier only when lower-tier attempts failed, the target remains ambiguous, or the UI complexity clearly requires escalation.
+31. If observe_page returns an actionable candidate that matches the current intent, stop observing and attempt the action immediately.
+32. Do not run more than 2 consecutive observe_page calls without attempting an action or reporting a concrete blocker.
+33. On dense ecommerce result pages, avoid broad inventory-style observe queries (for example "list all visible interactive elements") unless targeted queries failed. Prefer intent-scoped queries tied to product name + nearby action.
+34. After search submission, confirm results state before product actions (URL/heading/grid/tile visibility). If not confirmed, retry submission once with an alternate affordance, then continue.
+35. act() usage examples (few-shot guidance):
    - Do this:
      - Break tasks into single-step actions.
      - "act('open the filters panel')"
@@ -97,7 +102,7 @@ You will receive:
 Output ONLY markdown in this exact shape:
 
 ---
-# [Concise skill name]
+# [Specific demonstrated case] (Reusable: [General use case/purpose])
 
 type: atomic | workflow
 site: [domain]
@@ -119,6 +124,12 @@ Example dom_event_ref values:
 - "+4200ms click <button> aria=\\"Add\\" text=\\"Add to cart\\" near product \\"Cavendish Bananas\\""
 - "+6800ms input <input> aria=\\"Search products\\" value=\\"banana\\""
 
+## Happy Path
+[Concise execution notes for near one-to-one match with demo scenario]
+
+## General Path
+[How to adapt the same workflow for nearby intents/domain drift while preserving action order and safety]
+
 ## Self-Healing Notes
 [Fallback landmarks, alternate labels, or menu paths]
 
@@ -127,6 +138,10 @@ Example dom_event_ref values:
 ---
 
 Rules:
+- Skill title must include both:
+  - the specific demonstrated case from narration/demo
+  - a reusable general purpose phrase in parentheses prefixed with "Reusable:"
+- Title should improve retrieval for tangential but related tasks on the same site (for example same workflow with different item names).
 - Element text must be verbatim from observed list when observed elements exist.
 - Never include user-specific data such as document IDs, emails, or file names.
 - If narration is ambiguous or observed elements are weak/missing, set confidence to low and explain why.
@@ -149,4 +164,9 @@ Rules:
   - "select [value] from [dropdown]"
 - Do not use selectors, XPath, or implementation-specific DOM references in act_hint.
 - Stagehand may execute helper clicks as part of one act() call (for example opening a dropdown then choosing an option). Keep intent atomic and user-facing; let Stagehand plan sub-actions.
+- Always include both:
+  - Happy Path: optimized for near exact match to the demonstrated scenario.
+  - General Path: parameterized usage guidance for similar tasks on the same site (for example different item names, labels, or nearby controls).
+- In General Path, explain adaptation heuristics briefly (for example replace target noun/value, verify page state, then apply same action sequence).
+- If confidence is low, keep Happy Path minimal and put recovery emphasis in General Path + Self-Healing Notes.
 `;

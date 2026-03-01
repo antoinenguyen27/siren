@@ -1,6 +1,7 @@
 const SERVER = 'http://localhost:3000';
+const DEMO_STOP_ACK_TEXT = 'alright, I think I got it';
 
-let mode = 'idle';
+let selectedMode = 'work';
 let demoRecorder = null;
 let demoStream = null;
 let demoChunks = [];
@@ -24,13 +25,14 @@ const skillsListEl = document.getElementById('skills-list');
 const skillsEmptyEl = document.getElementById('skills-empty');
 const debugSectionEl = document.getElementById('debug-section');
 const debugLogEl = document.getElementById('debug-log');
-const micBtn = document.getElementById('mic-btn');
+const recordBtn = document.getElementById('record-btn');
+const modeSwitchEl = document.getElementById('mode-switch');
+const modeLabelEl = document.getElementById('mode-label');
+const activityDotEl = document.getElementById('activity-dot');
+const activityTextEl = document.getElementById('activity-text');
 const micSectionEl = document.querySelector('.mic-section');
 const liveTranscriptEl = document.getElementById('live-transcript');
-const startDemoBtn = document.getElementById('start-demo');
-const stopDemoBtn = document.getElementById('stop-demo');
-const startWorkBtn = document.getElementById('start-work');
-const stopWorkBtn = document.getElementById('stop-work');
+const debugOnlyEls = document.querySelectorAll('[data-debug-only="true"]');
 
 function getPreferredAudioMimeType() {
   const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
@@ -54,32 +56,46 @@ function setLiveTranscript(text, isInterim = false) {
   liveTranscriptEl.classList.toggle('interim', isInterim);
 }
 
-function setMicActiveUi(active) {
-  micBtn.classList.toggle('active', active);
-  micSectionEl.classList.toggle('active', active);
-  liveTranscriptEl.classList.toggle('active', active);
-  micBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
-  if (mode === 'demo') {
-    micBtn.textContent = active ? 'Demo\nRecording' : 'Demo\nReady';
-    return;
-  }
-  micBtn.textContent = active ? 'Stop\nRecording' : 'Tap To\nTalk';
+function isDemoRecordingActive() {
+  return Boolean(demoRecorder && demoRecorder.state !== 'inactive');
 }
 
-function setModeButtons(activeMode) {
-  const setPair = (startBtn, stopBtn, isActive) => {
-    startBtn.classList.toggle('btn-mode-inactive', isActive);
-    startBtn.classList.toggle('btn-mode-active', !isActive);
-    startBtn.classList.toggle('btn-muted', isActive);
+function isWorkRecordingActive() {
+  return Boolean(isPttActive);
+}
 
-    stopBtn.classList.toggle('btn-mode-active', isActive);
-    stopBtn.classList.toggle('btn-mode-inactive', !isActive);
-    stopBtn.classList.toggle('btn-muted', !isActive);
-  };
+function isAnyRecordingActive() {
+  return isDemoRecordingActive() || isWorkRecordingActive();
+}
 
-  setPair(startDemoBtn, stopDemoBtn, activeMode === 'demo');
-  setPair(startWorkBtn, stopWorkBtn, activeMode === 'work');
-  micBtn.disabled = activeMode === 'idle';
+function currentRecordingMode() {
+  if (isDemoRecordingActive()) return 'demo';
+  if (isWorkRecordingActive()) return 'work';
+  return null;
+}
+
+function setMicActiveUi(active) {
+  recordBtn.classList.toggle('active', active);
+  micSectionEl.classList.toggle('active', active);
+  liveTranscriptEl.classList.toggle('active', active);
+  recordBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
+}
+
+function setActivity(state, text) {
+  activityDotEl.classList.remove('idle', 'recording', 'processing', 'ready');
+  activityDotEl.classList.add(state);
+  activityTextEl.textContent = text;
+}
+
+function refreshModeUi() {
+  modeSwitchEl.checked = selectedMode === 'demo';
+  modeLabelEl.textContent = selectedMode === 'demo' ? 'Demo' : 'Worker';
+  const activeMode = currentRecordingMode();
+  if (activeMode) {
+    recordBtn.textContent = activeMode === 'demo' ? 'Stop Demo' : 'Stop Work';
+    return;
+  }
+  recordBtn.textContent = selectedMode === 'demo' ? 'Start Demo' : 'Start Work';
 }
 
 function getSpeechRecognitionConstructor() {
@@ -251,6 +267,15 @@ function appendDebugLogs(logs, source) {
 function setDebugMode(enabled) {
   isDebugMode = Boolean(enabled);
   debugSectionEl.classList.toggle('hidden', !isDebugMode);
+  for (const el of debugOnlyEls) {
+    el.classList.toggle('hidden-when-standard', !isDebugMode);
+  }
+}
+
+function speakDemoAcknowledgement() {
+  return speak(DEMO_STOP_ACK_TEXT).catch((error) => {
+    appendDebugLog(`[demo] tts ack failed: ${error.message}`);
+  });
 }
 
 function buildSkillCard(skill) {
@@ -319,7 +344,7 @@ async function refreshSkills() {
 
 async function startDemo() {
   try {
-    appendDebugLog('[ui] start-demo clicked');
+    appendDebugLog('[ui] record toggled on (demo)');
     if (isPttActive) {
       await stopPushToTalkCapture();
     }
@@ -355,9 +380,9 @@ async function startDemo() {
       `[demo] dom capture started tab=${demoTabId} frames=${captureStart.frames || 0} t0=${demoCaptureStartMs}`,
     );
 
-    mode = 'demo';
-    setModeButtons('demo');
-    setStatus('Demo mode active: narrate actions, then press Stop Demo to write skill.');
+    setStatus('Demo mode active: narrate actions, then press Record again to finish.');
+    setActivity('recording', 'Recording demo');
+    refreshModeUi();
     await startContinuousTranscription(tabUrl);
   } catch (error) {
     if (typeof demoTabId === 'number') {
@@ -370,17 +395,18 @@ async function startDemo() {
     demoTabId = null;
     demoCaptureStartMs = null;
     appendDebugLog(`[demo] start failed: ${error.message}`);
+    setActivity('idle', 'Idle');
+    refreshModeUi();
     setStatus(`Error: ${error.message}`);
   }
 }
 
 async function stopDemo() {
-  appendDebugLog('[ui] stop-demo clicked');
+  appendDebugLog('[ui] record toggled off (demo)');
   const fallbackTabUrl = demoTabUrl;
   const fallbackTabId = demoTabId;
   const captureStartMs = demoCaptureStartMs;
-  mode = 'idle';
-  setModeButtons('idle');
+  setActivity('processing', 'Processing demo');
   let recordingBlob = null;
   let domCapture = { frameEvents: [], sessionStartMs: captureStartMs };
 
@@ -410,6 +436,8 @@ async function stopDemo() {
   demoCaptureStartMs = null;
   setMicActiveUi(false);
   setLiveTranscript('');
+  refreshModeUi();
+  void speakDemoAcknowledgement();
 
   if (typeof fallbackTabId === 'number') {
     try {
@@ -437,6 +465,7 @@ async function stopDemo() {
 
   if (!recordingBlob || recordingBlob.size === 0) {
     appendDebugLog('[demo] stop with empty recording');
+    setActivity('idle', 'Idle');
     setStatus('Demo stopped. No audio captured.');
     return;
   }
@@ -445,6 +474,7 @@ async function stopDemo() {
     setStatus('Transcribing demo narration...');
     const transcript = await transcribeBlob(recordingBlob);
     if (!transcript.trim()) {
+      setActivity('idle', 'Idle');
       setStatus('Demo stopped. No speech detected.');
       setLiveTranscript('No speech detected.');
       return;
@@ -466,38 +496,19 @@ async function stopDemo() {
     if (data?.skillName) {
       appendSkillLog(`Skill written: ${data.skillName}`);
       await refreshSkills();
+      setActivity('ready', 'Skill ready');
       setStatus('Demo stopped. Skill written.');
       return;
     }
 
+    setActivity('idle', 'Idle');
     setStatus('Demo stopped. Skill writer returned no skill name.');
   } catch (error) {
     appendSkillLog(`Demo failed: ${error.message}`);
     appendDebugLog(`[demo] stop failed: ${error.message}`);
+    setActivity('idle', 'Idle');
     setStatus(`Error: ${error.message}`);
   }
-}
-
-async function startWork() {
-  appendDebugLog('[ui] start-work clicked');
-  mode = 'work';
-  setModeButtons('work');
-  setStatus('Work mode active: tap the mic to start and stop.');
-}
-
-async function stopWork() {
-  appendDebugLog('[ui] stop-work clicked');
-  mode = 'idle';
-  setModeButtons('idle');
-  await stopPushToTalkCapture();
-
-  try {
-    await postJson('/work/stop', {});
-  } catch {
-    // Ignore stop endpoint failures if server is already down.
-  }
-
-  setStatus('Work mode stopped.');
 }
 
 async function startContinuousTranscription(initialTabUrl) {
@@ -520,6 +531,7 @@ async function startContinuousTranscription(initialTabUrl) {
 
   demoRecorder.start();
   setMicActiveUi(true);
+  refreshModeUi();
   setLiveTranscript('Recording demo narration...', true);
 }
 
@@ -565,12 +577,13 @@ function blobToBase64(blob) {
 
 async function beginPushToTalkCapture() {
   if (isPttActive) return;
-  if (mode !== 'work') return;
 
   isPttActive = true;
   pttChunks = [];
   setMicActiveUi(true);
   setLiveTranscript('Listening...', true);
+  setActivity('recording', 'Recording work task');
+  refreshModeUi();
 
   try {
     pttStream = await getUserMediaWithPermissionFallback({ audio: true });
@@ -596,6 +609,8 @@ async function beginPushToTalkCapture() {
     pttRecorder = null;
     pttRecorderMimeType = '';
     setMicActiveUi(false);
+    setActivity('idle', 'Idle');
+    refreshModeUi();
     appendDebugLog(`[work] capture start failed: ${error.message}`);
     setStatus(`Error: ${error.message}`);
   }
@@ -607,11 +622,15 @@ async function stopPushToTalkCapture() {
   isPttActive = false;
   setMicActiveUi(false);
   stopLiveTranscriptionPreview();
+  setActivity('processing', 'Processing work task');
+  refreshModeUi();
 
   if (!pttRecorder || pttRecorder.state === 'inactive') {
     if (pttStream) pttStream.getTracks().forEach((track) => track.stop());
     pttRecorder = null;
     pttStream = null;
+    setActivity('idle', 'Idle');
+    refreshModeUi();
     return;
   }
 
@@ -629,14 +648,14 @@ async function stopPushToTalkCapture() {
   pttRecorder = null;
   pttStream = null;
 
-  if (mode !== 'work') return;
-
   const mimeType = pttRecorderMimeType || pttChunks[0]?.type || getPreferredAudioMimeType() || 'audio/webm';
   const blob = new Blob(pttChunks, { type: mimeType });
   pttChunks = [];
   pttRecorderMimeType = '';
 
   if (blob.size === 0) {
+    setActivity('idle', 'Idle');
+    refreshModeUi();
     setStatus('No audio captured. Try again.');
     setLiveTranscript('No speech detected.');
     return;
@@ -663,9 +682,13 @@ async function stopPushToTalkCapture() {
     await speak(responseText);
 
     // Mic intentionally remains off after speaking.
-    setStatus('Ready. Hold mic button for next instruction.');
+    setActivity('ready', 'Ready');
+    refreshModeUi();
+    setStatus('Ready. Press Record for the next instruction.');
   } catch (error) {
     appendDebugLog(`[work] execute failed: ${error.message}`);
+    setActivity('idle', 'Idle');
+    refreshModeUi();
     setStatus(`Error: ${error.message}`);
   }
 }
@@ -717,10 +740,6 @@ async function speak(text) {
   URL.revokeObjectURL(url);
 }
 
-document.getElementById('start-demo').addEventListener('click', startDemo);
-document.getElementById('stop-demo').addEventListener('click', stopDemo);
-document.getElementById('start-work').addEventListener('click', startWork);
-document.getElementById('stop-work').addEventListener('click', stopWork);
 skillsListEl.addEventListener('click', async (event) => {
   const target = event.target;
   if (!(target instanceof HTMLElement) || target.dataset.action !== 'delete-skill') return;
@@ -743,24 +762,51 @@ skillsListEl.addEventListener('click', async (event) => {
   }
 });
 
-micBtn.addEventListener('click', () => {
-  appendDebugLog(`[ui] mic clicked mode=${mode} pttActive=${isPttActive}`);
-  if (mode === 'demo') {
-    setStatus('Demo is recording. Press Stop Demo to finish and write skill.');
+async function toggleRecord() {
+  const active = currentRecordingMode();
+  appendDebugLog(`[ui] record clicked selectedMode=${selectedMode} activeMode=${active || 'none'}`);
+
+  if (active === 'demo') {
+    await stopDemo();
     return;
   }
-  if (mode !== 'work') {
-    setStatus('Mic is available in Work mode only. Press Start Work first.');
+  if (active === 'work') {
+    await stopPushToTalkCapture();
     return;
   }
-  if (isPttActive) {
-    stopPushToTalkCapture();
-  } else {
-    beginPushToTalkCapture();
+
+  if (selectedMode === 'demo') {
+    await startDemo();
+    return;
   }
+
+  await beginPushToTalkCapture();
+}
+
+modeSwitchEl.addEventListener('change', () => {
+  const active = currentRecordingMode();
+  if (active) {
+    modeSwitchEl.checked = selectedMode === 'demo';
+    setStatus('Stop recording before switching mode.');
+    return;
+  }
+  selectedMode = modeSwitchEl.checked ? 'demo' : 'work';
+  appendDebugLog(`[ui] mode switched to ${selectedMode}`);
+  setActivity('idle', 'Idle');
+  refreshModeUi();
 });
 
-setModeButtons('idle');
+recordBtn.addEventListener('click', () => {
+  toggleRecord().catch((error) => {
+    appendDebugLog(`[ui] record toggle failed: ${error.message}`);
+    setActivity('idle', 'Idle');
+    refreshModeUi();
+    setStatus(`Error: ${error.message}`);
+  });
+});
+
+refreshModeUi();
+setActivity('idle', 'Idle');
 (async () => {
   try {
     const data = await chrome.storage.local.get(['debug_mode']);
