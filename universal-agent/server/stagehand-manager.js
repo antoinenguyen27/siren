@@ -322,6 +322,22 @@ export async function observePage(instruction, options = {}) {
   throw new Error('Neither stagehand.observe() nor page.observe() is available.');
 }
 
+export async function extractFromPage(instruction, options = {}) {
+  const { page: incomingPage, connection = 'local', cdpUrl = null, ...extractOptions } = options;
+  const sh = await getStagehand({ connection, cdpUrl });
+  const page = incomingPage || (await resolvePage(sh));
+
+  if (typeof sh.extract === 'function') {
+    return sh.extract(instruction, { ...extractOptions, page });
+  }
+
+  if (typeof page.extract === 'function') {
+    return page.extract(instruction, extractOptions);
+  }
+
+  throw new Error('Neither stagehand.extract() nor page.extract() is available.');
+}
+
 export async function actOnPage(action, options = {}) {
   const { page: incomingPage, connection = 'local', cdpUrl = null, ...actOptions } = options;
   const sh = await getStagehand({ connection, cdpUrl });
@@ -336,6 +352,48 @@ export async function actOnPage(action, options = {}) {
   }
 
   throw new Error('Neither stagehand.act() nor page.act() is available.');
+}
+
+export async function deepLocateOnPage(selector, operation, value, options = {}) {
+  const { page: incomingPage, connection = 'local', cdpUrl = null } = options;
+  const page = incomingPage || (await getPage({ connection, cdpUrl }));
+
+  if (!page || typeof page.deepLocator !== 'function') {
+    throw new Error('page.deepLocator() is unavailable in the current Stagehand/Playwright runtime.');
+  }
+  if (!selector || !String(selector).trim()) {
+    throw new Error('deepLocateOnPage requires a non-empty selector.');
+  }
+
+  const locator = page.deepLocator(String(selector));
+  const op = String(operation || '').trim();
+
+  if (op === 'click') {
+    await locator.click();
+    return;
+  }
+  if (op === 'fill') {
+    await locator.fill(String(value || ''));
+    return;
+  }
+  if (op === 'type') {
+    await locator.type(String(value || ''));
+    return;
+  }
+  if (op === 'hover') {
+    await locator.hover();
+    return;
+  }
+  if (op === 'selectOption') {
+    await locator.selectOption(String(value || ''));
+    return;
+  }
+  if (op === 'scrollTo') {
+    await locator.scrollTo(value ?? 'center');
+    return;
+  }
+
+  throw new Error(`Unsupported deepLocator operation "${op}".`);
 }
 
 export async function navigateTo(url, options = {}) {

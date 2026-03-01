@@ -91,7 +91,7 @@ app.post('/demo/start', async (req, res) => {
 });
 
 app.post('/demo/voice-segment', async (req, res) => {
-  const { transcript, tabUrl, demoCdpUrl } = req.body || {};
+  const { transcript, tabUrl, demoCdpUrl, domCapture } = req.body || {};
   const debugLogs = [];
   const debug = (message) => debugLogs.push(message);
 
@@ -103,6 +103,16 @@ app.post('/demo/voice-segment', async (req, res) => {
   }
 
   try {
+    const domFrameEvents = Array.isArray(domCapture?.frameEvents) ? domCapture.frameEvents : [];
+    const domSessionStartMs = Number(domCapture?.sessionStartMs || 0) || null;
+    const domEventCount = domFrameEvents.reduce(
+      (total, frame) => total + (Array.isArray(frame?.events) ? frame.events.length : 0),
+      0,
+    );
+    debug(
+      `[demo] dom capture received sessionStartMs=${domSessionStartMs || 'n/a'} frames=${domFrameEvents.length} events=${domEventCount}`,
+    );
+
     if (isValidUrl(tabUrl)) {
       const attached = await attachToDemoTab(tabUrl, String(demoCdpUrl));
       debug(`[demo] attached to tab "${attached.url()}"`);
@@ -179,7 +189,15 @@ app.post('/demo/voice-segment', async (req, res) => {
     }
 
     debug('[demo] writing skill from transcript + observed elements');
-    const skillName = await writeSkillFromSegment(String(transcript), observedElements, tabUrl);
+    const skillName = await writeSkillFromSegment(
+      String(transcript),
+      observedElements,
+      tabUrl,
+      {
+        frameEvents: domFrameEvents,
+        sessionStartMs: domSessionStartMs,
+      },
+    );
     debug(`[demo] skill written: ${skillName}`);
     return res.json({ ok: true, skillName, debugLogs });
   } catch (error) {
@@ -240,6 +258,7 @@ app.post('/work/execute', async (req, res) => {
         configurable: {
           thread_id: `work-${Date.now()}`,
         },
+        recursionLimit: 40,
       },
     );
     debug('[work] agent invocation complete');

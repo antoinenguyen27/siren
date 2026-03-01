@@ -3,7 +3,14 @@ import { MemorySaver } from '@langchain/langgraph';
 import { ChatMistralAI } from '@langchain/mistralai';
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
-import { actOnPage, getPage, navigateTo, observePage } from '../stagehand-manager.js';
+import {
+  actOnPage,
+  deepLocateOnPage,
+  extractFromPage,
+  getPage,
+  navigateTo,
+  observePage,
+} from '../stagehand-manager.js';
 import { loadAllSkills, loadSkillsForSite } from '../skills/skill-store.js';
 import { getSessionMemory } from '../memory/session-memory.js';
 import { WORK_AGENT_SYSTEM_PROMPT } from './system-prompts.js';
@@ -21,6 +28,9 @@ function createLogger(debugLog) {
 function buildTools({ debugLog } = {}) {
   const log = createLogger(debugLog);
   const retryByStep = new Map();
+  let observeCalls = 0;
+  let lastObserveSignature = '';
+  let sameObserveSignatureCount = 0;
   const runActionWithRetry = async ({ stepDescription, stepKey, execute, toolName }) => {
     try {
       await execute();
@@ -115,23 +125,92 @@ function buildTools({ debugLog } = {}) {
 
   const observeTool = tool(
     async ({ query }) => {
+      observeCalls += 1;
       log(`[tool:observe_page] query="${query}"`);
+      if (observeCalls > 12) {
+        return 'OBSERVE_GUARDRAIL: observe_page call budget exceeded for this task. Stop calling observe_page and proceed with best-effort act() or report failure.';
+      }
       const elements = await observePage(query, { iframes: true });
       log(`[tool:observe_page] found=${elements.length}`);
-      return JSON.stringify(
-        elements.slice(0, 10).map((element) => ({
-          selector: element.selector,
-          description: element.description,
-          method: element.method,
-          arguments: element.arguments,
-        })),
-      );
+      const mapped = elements.slice(0, 10).map((element) => ({
+        selector: element.selector,
+        description: element.description,
+        method: element.method,
+        arguments: element.arguments,
+      }));
+
+      const signature = mapped
+        .map((item) => `${item.description}|${item.method}|${item.selector || ''}`)
+        .join('||');
+      if (signature && signature === lastObserveSignature) {
+        sameObserveSignatureCount += 1;
+      } else {
+        sameObserveSignatureCount = 0;
+        lastObserveSignature = signature;
+      }
+
+      if (sameObserveSignatureCount >= 2) {
+        return `OBSERVE_STALE: results unchanged across repeated calls. Stop calling observe_page repeatedly. Execute a fallback action (for example scroll, open filters, or act on best candidate) or report failure.\n${JSON.stringify(mapped)}`;
+      }
+
+      return JSON.stringify(mapped);
     },
     {
       name: 'observe_page',
       description: 'Observe current semantic page state with iframe-aware extraction.',
       schema: z.object({
         query: z.string().describe('What to inspect on the page.'),
+      }),
+    },
+  );
+
+  const extractTool = tool(
+    async ({ query }) => {
+      log(`[tool:extract_page_data] query="${query}"`);
+      const result = await extractFromPage(query, { iframes: true });
+      return JSON.stringify(result ?? {});
+    },
+    {
+      name: 'extract_page_data',
+      description:
+        'Extract non-interaction data from the current page (titles, values, summaries). Use this for data-oriented questions instead of observe_page.',
+      schema: z.object({
+        query: z.string().describe('Specific data extraction request.'),
+      }),
+    },
+  );
+
+  const deepLocatorActionTool = tool(
+    async ({ selector, operation, value, stepDescription }) => {
+      const stepKey = stepDescription.trim().toLowerCase();
+      log(
+        `[tool:deep_locator_action] step="${stepDescription}" selector="${selector}" operation="${operation}"`,
+      );
+      return runActionWithRetry({
+        stepDescription,
+        stepKey,
+        toolName: 'deep_locator_action',
+        execute: async () => {
+          await deepLocateOnPage(selector, operation, value);
+        },
+      });
+    },
+    {
+      name: 'deep_locator_action',
+      description:
+        'Execute a precise selector-based action via Stagehand deepLocator(). Use only after a target is confirmed (from observe_page or captured DOM timeline) and natural-language act() is insufficient.',
+      schema: z.object({
+        selector: z
+          .string()
+          .describe('deepLocator selector. Use iframe hop syntax with >> when needed.'),
+        operation: z
+          .enum(['click', 'fill', 'type', 'hover', 'selectOption', 'scrollTo'])
+          .describe('Operation to execute with deepLocator.'),
+        value: z
+          .string()
+          .optional()
+          .describe('Value payload for fill/type/selectOption/scrollTo operations.'),
+        stepDescription: z.string().describe('Human-readable description of the current step.'),
       }),
     },
   );
@@ -204,7 +283,16 @@ function buildTools({ debugLog } = {}) {
     },
   );
 
-  return [actTool, actObservedTool, observeTool, readSkillsTool, readMemoryTool, navigateTool];
+  return [
+    actTool,
+    actObservedTool,
+    deepLocatorActionTool,
+    observeTool,
+    extractTool,
+    readSkillsTool,
+    readMemoryTool,
+    navigateTool,
+  ];
 }
 
 export function buildWorkAgent() {

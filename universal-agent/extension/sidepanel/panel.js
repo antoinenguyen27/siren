@@ -6,6 +6,8 @@ let demoStream = null;
 let demoChunks = [];
 let demoRecorderMimeType = '';
 let demoTabUrl = null;
+let demoTabId = null;
+let demoCaptureStartMs = null;
 let pttRecorder = null;
 let pttStream = null;
 let pttChunks = [];
@@ -182,6 +184,14 @@ async function getActiveTabUrl() {
   return response?.url || null;
 }
 
+async function getActiveTabInfo() {
+  const response = await chrome.runtime.sendMessage({ type: 'GET_ACTIVE_TAB_INFO' });
+  return {
+    id: typeof response?.id === 'number' ? response.id : null,
+    url: response?.url || null,
+  };
+}
+
 async function getDemoCdpUrl() {
   const { demo_cdp_url } = await chrome.storage.local.get(['demo_cdp_url']);
   const value = String(demo_cdp_url || '').trim();
@@ -313,8 +323,9 @@ async function startDemo() {
     if (isPttActive) {
       await stopPushToTalkCapture();
     }
-    const tabUrl = await getActiveTabUrl();
-    if (!tabUrl) {
+    const tabInfo = await getActiveTabInfo();
+    const tabUrl = tabInfo?.url || null;
+    if (!tabUrl || typeof tabInfo?.id !== 'number') {
       setStatus('No active tab URL found. Open a normal web page.');
       return;
     }
@@ -329,12 +340,35 @@ async function startDemo() {
     if (startPayload?.attachedUrl) appendDebugLog(`[demo] attached tab url=${startPayload.attachedUrl}`);
     appendDebugLog(`[demo] started for tab ${tabUrl}`);
     demoTabUrl = tabUrl;
+    demoTabId = tabInfo.id;
+    demoCaptureStartMs = Date.now();
+
+    const captureStart = await chrome.runtime.sendMessage({
+      type: 'START_DEMO_DOM_CAPTURE',
+      tabId: demoTabId,
+      sessionStartMs: demoCaptureStartMs,
+    });
+    if (!captureStart?.ok) {
+      throw new Error(captureStart?.error || 'Failed to start DOM capture.');
+    }
+    appendDebugLog(
+      `[demo] dom capture started tab=${demoTabId} frames=${captureStart.frames || 0} t0=${demoCaptureStartMs}`,
+    );
 
     mode = 'demo';
     setModeButtons('demo');
     setStatus('Demo mode active: narrate actions, then press Stop Demo to write skill.');
     await startContinuousTranscription(tabUrl);
   } catch (error) {
+    if (typeof demoTabId === 'number') {
+      try {
+        await chrome.runtime.sendMessage({ type: 'STOP_DEMO_DOM_CAPTURE', tabId: demoTabId });
+      } catch {
+        // Ignore cleanup failures.
+      }
+    }
+    demoTabId = null;
+    demoCaptureStartMs = null;
     appendDebugLog(`[demo] start failed: ${error.message}`);
     setStatus(`Error: ${error.message}`);
   }
@@ -343,9 +377,12 @@ async function startDemo() {
 async function stopDemo() {
   appendDebugLog('[ui] stop-demo clicked');
   const fallbackTabUrl = demoTabUrl;
+  const fallbackTabId = demoTabId;
+  const captureStartMs = demoCaptureStartMs;
   mode = 'idle';
   setModeButtons('idle');
   let recordingBlob = null;
+  let domCapture = { frameEvents: [], sessionStartMs: captureStartMs };
 
   if (demoRecorder && demoRecorder.state !== 'inactive') {
     const done = new Promise((resolve) => {
@@ -369,8 +406,34 @@ async function stopDemo() {
   demoRecorder = null;
   demoStream = null;
   demoTabUrl = null;
+  demoTabId = null;
+  demoCaptureStartMs = null;
   setMicActiveUi(false);
   setLiveTranscript('');
+
+  if (typeof fallbackTabId === 'number') {
+    try {
+      const captureStop = await chrome.runtime.sendMessage({
+        type: 'STOP_DEMO_DOM_CAPTURE',
+        tabId: fallbackTabId,
+      });
+      if (!captureStop?.ok) {
+        appendDebugLog(`[demo] dom capture stop warning: ${captureStop?.error || 'unknown error'}`);
+      } else {
+        domCapture = {
+          frameEvents: Array.isArray(captureStop.frameEvents) ? captureStop.frameEvents : [],
+          sessionStartMs: captureStop.sessionStartMs || captureStartMs || null,
+        };
+        const eventCount = domCapture.frameEvents.reduce(
+          (total, frame) => total + (Array.isArray(frame?.events) ? frame.events.length : 0),
+          0,
+        );
+        appendDebugLog(`[demo] dom capture stopped frames=${domCapture.frameEvents.length} events=${eventCount}`);
+      }
+    } catch (error) {
+      appendDebugLog(`[demo] dom capture stop warning: ${error.message}`);
+    }
+  }
 
   if (!recordingBlob || recordingBlob.size === 0) {
     appendDebugLog('[demo] stop with empty recording');
@@ -396,6 +459,7 @@ async function stopDemo() {
       transcript,
       tabUrl: activeTabUrl || fallbackTabUrl,
       demoCdpUrl,
+      domCapture,
     });
     appendDebugLogs(data?.debugLogs, '[server]');
 
