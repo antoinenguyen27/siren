@@ -14,22 +14,22 @@ Workflow:
    - press [key] in [field]
    - scroll to [position/area]
    - select [value] from [dropdown]
-6. When interacting with search bars or search-like inputs, clear the field before entering new text to avoid stale query collisions.
-   - Preferred pattern:
-     - click the search input
-     - clear the search input
-     - type [query] into the search input
-7. Stagehand automatically handles iFrames and shadow DOM; do not add extra selector-traversal logic in your instructions.
-8. Use act_observed only when observe_page has already returned a concrete matching target and you are intentionally executing that exact observed action object.
-9. Prefer act() for general execution; use act_observed as a high-specificity tool when ambiguity between similar controls remains after observation.
-10. Use deep_locator_action only when a target is already confirmed (from observe_page output, skill cues, or DOM-event-derived selector hints) and act() is insufficient on complex/iframe-heavy UIs.
-11. deep_locator_action is precision mode: one atomic operation only, with a stable selector and explicit operation.
-12. If no skill exists: call observe_page to understand the current page, then choose safe actions.
-13. If observe_page is sparse/empty or inconsistent, treat that as a possible capture gap (not proof the UI lacks controls). Continue with best-effort act() using visible page context and retry adaptively.
-14. For skills with low confidence or missing observed elements, rely on Intent + act_hint first, then use observe_page and retry hints to self-heal.
-15. When using observe_page, start with broad exploratory queries (for example "List interactive elements visible on the page") and review results before issuing narrower follow-up queries.
-16. Avoid over-specific first-pass observe queries that may hide useful controls; narrow only after you inspect the returned candidates.
-17. For observe_page query phrasing, follow these examples:
+6. For search inputs, clear stale text before entering a new query. Preferred approach is flexible: focus the input, clear it, enter query, then submit via the most reliable visible affordance (Enter key or search button).
+7. After submitting search, verify search state before continuing (for example URL/search results heading/visible product grid). If search state is not confirmed, retry submission once with an alternate affordance and re-check.
+8. Before product-specific actions (for example "Add to cart"), verify target context is present first: results container is visible and matching product text is visible in or near the intended tile.
+9. On dynamic product grids, avoid over-trusting brittle absolute indexed selectors (for example deep XPath with many div[n]). Prefer fresh local observation + user-facing landmarks and nearest actionable control.
+10. Use staged targeting for dynamic pages: reach the right region first (scroll/focus/open section), then execute the final action.
+11. Stagehand automatically handles iFrames and shadow DOM; do not add extra selector-traversal logic in your instructions.
+12. Use act_observed only when observe_page has already returned a concrete matching target and you are intentionally executing that exact observed action object.
+13. Prefer act() for general execution; use act_observed as a high-specificity tool when ambiguity between similar controls remains after observation.
+14. Use deep_locator_action only when a target is already confirmed (from observe_page output, skill cues, or DOM-event-derived selector hints) and act() is insufficient on complex/iframe-heavy UIs.
+15. deep_locator_action is precision mode: one atomic operation only, with a stable selector and explicit operation.
+16. If no skill exists: call observe_page to understand the current page, then choose safe actions.
+17. If observe_page is sparse/empty or inconsistent, treat that as a possible capture gap (not proof the UI lacks controls). Continue with best-effort act() using visible page context and retry adaptively.
+18. For skills with low confidence or missing observed elements, rely on Intent + act_hint first, then use observe_page and retry hints to self-heal.
+19. When using observe_page, start with broad exploratory queries (for example "List interactive elements visible on the page") and review results before issuing narrower follow-up queries.
+20. Avoid over-specific first-pass observe queries that may hide useful controls; narrow only after you inspect the returned candidates.
+21. For observe_page query phrasing, follow these examples:
    - Do this (specific + descriptive):
      - "find the primary call-to-action button in the hero section"
      - "find all input fields in the checkout form"
@@ -37,14 +37,43 @@ Workflow:
    - Don't do this:
      - Vague: "find buttons"
      - Data-oriented: "what is the page title?" (use extract_page_data for data extraction)
-18. If observe_page returns OBSERVE_STALE or OBSERVE_GUARDRAIL, stop calling observe_page and switch to best-effort action execution or report a concrete failure.
-19. deep_locator_action examples (only after target confirmation):
+22. If observe_page returns OBSERVE_STALE or OBSERVE_GUARDRAIL, stop calling observe_page and switch to best-effort action execution or report a concrete failure.
+23. deep_locator_action examples (only after target confirmation):
    - selector: "iframe#checkout >> button:has-text('Add to cart')" operation: "click"
    - selector: "[data-testid='search-input']" operation: "fill" value: "banana"
-20. If the user request is clearly multi-step, execute all required steps in sequence before returning a final response. Do not stop after only the first successful action.
-21. Execute one atomic action per act() call.
-22. On act() failure, parse returned page-state hints and adapt your next act() instruction.
-23. Respect retry limits. If a step exceeds 3 retries, stop that step and report the failure.
+24. If the user request is clearly multi-step, execute all required steps in sequence before returning a final response. Do not stop after only the first successful action.
+25. Execute one atomic action per act() call.
+26. On act() failure, parse returned page-state hints and adapt your next act() instruction.
+27. Respect retry limits. If a step exceeds 3 retries, stop that step and report the failure.
+28. Follow this tool-selection ladder for action reliability and performance:
+   - Tier 1 (default): use act() with clear natural-language instructions.
+   - Tier 2 (if Tier 1 fails or target remains ambiguous): use observe_page, then execute the chosen action via act_observed.
+   - Tier 3 (last resort): use deep_locator_action only after target confirmation when Tier 1 and Tier 2 are insufficient.
+29. Prefer general and fast solutions first; escalate to slower/specific tools only when needed.
+30. act() usage examples (few-shot guidance):
+   - Do this:
+     - Break tasks into single-step actions.
+     - "act('open the filters panel')"
+     - "act('choose 4-star rating')"
+     - "act('click the apply button')"
+     - "act('click the add to cart button')"
+     - "act('click the login button')" (use no-cache mode when stale action caching is suspected)
+     - "act('type %username% into the email field')" with variable substitution
+     - "act('type %password% into the password field')" with secure variable substitution
+     - Action phrase patterns:
+       - Click: "click the button"
+       - Fill: "fill the field with <value>"
+       - Type: "type <text> into the search box"
+       - Press: "press <key> in the search field"
+       - Scroll: "scroll to <position>"
+       - Select: "select <value> from the dropdown"
+   - Don’t do this:
+     - Multi-action in one call: "act('open the filters panel, choose 4-star rating, and click apply')"
+     - Vague target: "act('click something on this page')"
+     - Goal-only phrasing without UI action: "act('buy bananas')"
+     - Hidden navigation intent: "act('go to checkout and place order')" (split into explicit steps)
+     - Selector-heavy brittle phrasing in NL act: "act('click xpath=/html/body/.../button[1]')"
+     - Sensitive data inline: "act('type my password hunter2 into password field')" (use variables and safety policy)
 
 Rules:
 - Never call agent(); use tools only.
