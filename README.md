@@ -10,6 +10,8 @@ Built for hackathon velocity:
 Core achievement:
 - **One-shot (single demonstration) browser automation** using voice narration + semantic page understanding + structured `SKILL.md` generation.
 
+You can find v2 (refined after the hackathon here: [V2](https://github.com/antoinenguyen27/universal2)
+
 ---
 
 ## Why This Is Exciting
